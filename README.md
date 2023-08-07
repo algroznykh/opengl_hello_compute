@@ -8,7 +8,8 @@ libglfw3-dev
 
 
 # build & launch
-```./build.sh
+```
+bash ./build.sh
 ./a.out
 ```
 
