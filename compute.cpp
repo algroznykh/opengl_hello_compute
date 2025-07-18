@@ -34,7 +34,7 @@ const float FRAME_TIME = 1.0f / FPS_CAP;
 // Audio constants - Fixed buffer size mismatch
 const int SAMPLE_RATE = 44100;
 const int BUFFER_SIZE = 1024;  // Increased for better frequency resolution
-const int FFT_SIZE = BUFFER_SIZE;     // Must match BUFFER_SIZE for proper processing
+const int FFT_SIZE = BUFFER_SIZE ;     // Must match BUFFER_SIZE for proper processing
 
 // Audio data
 std::vector<float> audioBuffer(BUFFER_SIZE);
@@ -128,7 +128,7 @@ void audioProcessingLoop() {
             //     fftMagnitudes[i] = fftMagnitudes[i] / maxMagnitude;
             // }
             // Apply logarithmic scaling for better visualization
-            fftMagnitudes[i] = fftMagnitudes[i] > 0.0f ? log10(1.0f + fftMagnitudes[i] * 1.f) : 0.0f;
+            fftMagnitudes[i] = fftMagnitudes[i] > 0.0f ? log10(1.0f + fftMagnitudes[i] * (float(i) / 16. + .1f)) : 0.0f;
         }
     }
 }

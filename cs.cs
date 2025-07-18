@@ -30,10 +30,12 @@ void main() {
     vec2 uv = vec2(texelCoord.xy) / (vec2(gl_NumWorkGroups.xy) * vec2(gl_WorkGroupSize.xy));
 
     // Get audio data - map X coordinate to frequency bin
-    int audioIndex = int(uv.x * 256.0); // 256 = FFT_SIZE/2
-    audioIndex = clamp(audioIndex, 0, 255);
+    float FFT_SIZE = 1024. / 8.;
+    int audioIndex = int(uv.x * FFT_SIZE); // 256 = FFT_SIZE/2
+    audioIndex = clamp(audioIndex, 0, int(FFT_SIZE)-1);
     
-    float audioMagnitude = imageLoad(audioTexture, ivec2(audioIndex, 0)).r;
+    int SPECTRUM_SHIFT = 2;
+    float audioMagnitude = imageLoad(audioTexture, ivec2(audioIndex + SPECTRUM_SHIFT, 0)).r;
     audioMagnitude = clamp(audioMagnitude * 200.0, 0.0, 1.0); // Amplify and clamp
     
     // Create spectrum bars across the full width
