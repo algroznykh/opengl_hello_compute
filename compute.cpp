@@ -11,6 +11,7 @@
 #include <fftw3.h>
 #include <cmath>
 #include <algorithm>
+#include <opencv2/opencv.hpp>
 
 #include "shader_c.h"
 #include "shader_m.h"
@@ -45,6 +46,9 @@ bool audioRunning = true;  // Changed to true for continuous operation
 // Audio texture
 unsigned int audioTexture;
 
+// Camera texture
+unsigned int cameraTexture;
+
 // FFT variables
 fftwf_complex *fft_in;
 fftwf_complex *fft_out;
@@ -55,6 +59,13 @@ pa_simple *pa_s = NULL;
 
 // Audio processing thread
 std::thread audioThread;
+
+// Camera variables
+cv::VideoCapture camera;
+cv::Mat cameraFrame;
+std::mutex cameraMutex;
+std::thread cameraThread;
+bool cameraRunning = true;
 
 void processInput(GLFWwindow *window) {
     if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
@@ -130,6 +141,53 @@ void audioProcessingLoop() {
             // Apply logarithmic scaling for better visualization
             fftMagnitudes[i] = fftMagnitudes[i] > 0.0f ? log10(1.0f + fftMagnitudes[i] * (float(i) / 16. + .1f)) : 0.0f;
         }
+    }
+}
+
+bool initCamera() {
+    // Try different camera backends
+    camera.open(0, cv::CAP_V4L2); // Try V4L2 first
+    if (!camera.isOpened()) {
+        camera.open(0); // Try default backend
+    }
+    
+    if (!camera.isOpened()) {
+        std::cerr << "No camera available, using black texture" << std::endl;
+        return false; // Will use black texture as fallback
+    }
+    
+    // Set camera properties
+    camera.set(cv::CAP_PROP_FRAME_WIDTH, TEXTURE_WIDTH);
+    camera.set(cv::CAP_PROP_FRAME_HEIGHT, TEXTURE_HEIGHT);
+    camera.set(cv::CAP_PROP_FPS, 30);
+    
+    std::cout << "Camera initialized successfully" << std::endl;
+    return true;
+}
+
+void cameraProcessingLoop() {
+    while (cameraRunning) {
+        cv::Mat frame;
+        camera >> frame;
+        
+        if (!frame.empty()) {
+            std::lock_guard<std::mutex> lock(cameraMutex);
+            cv::resize(frame, cameraFrame, cv::Size(TEXTURE_WIDTH, TEXTURE_HEIGHT));
+            cv::flip(cameraFrame, cameraFrame, 0); // Flip vertically for OpenGL
+        }
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
+    }
+}
+
+void cleanupCamera() {
+    cameraRunning = false;
+    if (cameraThread.joinable()) {
+        cameraThread.join();
+    }
+    
+    if (camera.isOpened()) {
+        camera.release();
     }
 }
 
@@ -223,14 +281,36 @@ int main() {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, FFT_SIZE/2, 1, 0, GL_RED, GL_FLOAT, NULL);
     glBindImageTexture(1, audioTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32F);
 
+    // Create camera texture
+    glGenTextures(1, &cameraTexture);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, cameraTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, TEXTURE_WIDTH, TEXTURE_HEIGHT, 0, GL_BGR, GL_UNSIGNED_BYTE, NULL);
+    glBindImageTexture(2, cameraTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
+
     // Initialize audio system
     if (!initAudio()) {
         std::cerr << "Failed to initialize audio system" << std::endl;
         return -1;
     }
 
+    // Initialize camera system (optional - continues without camera)
+    bool cameraAvailable = initCamera();
+    if (!cameraAvailable) {
+        std::cout << "Continuing without camera input" << std::endl;
+    }
+
     // Start audio processing thread
     audioThread = std::thread(audioProcessingLoop);
+    
+    // Start camera processing thread (only if camera is available)
+    if (cameraAvailable) {
+        cameraThread = std::thread(cameraProcessingLoop);
+    }
 
     // Compute shader cache
     ComputeShader* currentComputeShader = nullptr;
@@ -276,6 +356,16 @@ int main() {
                 glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, FFT_SIZE/2, 1, GL_RED, GL_FLOAT, fftMagnitudes.data());
             }
 
+            // Update camera texture with camera data (with mutex protection)
+            {
+                std::lock_guard<std::mutex> lock(cameraMutex);
+                if (!cameraFrame.empty()) {
+                    glActiveTexture(GL_TEXTURE2);
+                    glBindTexture(GL_TEXTURE_2D, cameraTexture);
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, TEXTURE_WIDTH, TEXTURE_HEIGHT, GL_BGR, GL_UNSIGNED_BYTE, cameraFrame.data);
+                }
+            }
+
             glDispatchCompute((unsigned int)TEXTURE_WIDTH/10, (unsigned int)TEXTURE_HEIGHT/10, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
@@ -295,6 +385,7 @@ int main() {
 
     // Cleanup
     cleanupAudio();
+    cleanupCamera();
     
     if (currentComputeShader) {
         delete currentComputeShader;

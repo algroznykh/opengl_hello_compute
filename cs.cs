@@ -10,6 +10,7 @@ layout (local_size_x = 10, local_size_y = 10, local_size_z = 1) in;
 
 layout(rgba32f, binding = 0) uniform image2D imgOutput;
 layout(r32f, binding = 1) uniform image2D audioTexture;
+layout(rgba8, binding = 2) uniform image2D cameraInput;
 
 layout (location = 0) uniform float time;                 /** Time */
 
@@ -28,6 +29,9 @@ void main() {
 	ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
     
     vec2 uv = vec2(texelCoord.xy) / (vec2(gl_NumWorkGroups.xy) * vec2(gl_WorkGroupSize.xy));
+
+    // Sample camera input
+    vec4 cameraColor = imageLoad(cameraInput, texelCoord);
 
     // Get audio data - map X coordinate to frequency bin
     float FFT_SIZE = 1024. / 8.;
@@ -80,6 +84,9 @@ void main() {
     if (gridX < 0.05 || gridY < 0.05) {
         finalColor += vec3(0.02);
     }
+    
+    // Blend with camera input
+    finalColor = mix(finalColor, cameraColor.rgb, 0.3);
     
     value = vec4(finalColor, 1.0);
 	imageStore(imgOutput, texelCoord, value);
