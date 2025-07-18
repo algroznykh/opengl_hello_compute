@@ -21,11 +21,16 @@ const unsigned int TEXTURE_WIDTH = 1000, TEXTURE_HEIGHT = 1000;
 // timing
 float deltaTime = 0.0f; // time between current frame and last frame
 float lastFrame = 0.0f; // time of last frame
+const float FPS_CAP = 90.0f; // FPS cap
+const float FRAME_TIME = 1.0f / FPS_CAP; // Minimum time per frame
 
 void processInput(GLFWwindow *window) {
     if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 }
+
+//ComputeShader computeShader("cs.cs");
+
 
 
 int main() {
@@ -44,7 +49,7 @@ int main() {
 	glfwMakeContextCurrent(window);
 
 	glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-	glfwSwapInterval(0);
+	glfwSwapInterval(0); // Disable VSync to handle FPS cap manually
 
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
@@ -78,7 +83,7 @@ int main() {
 
 
     Shader screenQuad("screenQuad.vs", "screenQuad.fs");
-	ComputeShader computeShader("cs.cs");
+	// ComputeShader computeShader("cs.cs");
 
 	screenQuad.use();
 	screenQuad.setInt("tex", 0);
@@ -110,35 +115,61 @@ int main() {
 		// Set frame time
 		float currentFrame = glfwGetTime();
 		deltaTime = currentFrame - lastFrame;
+
+        // Cap FPS by sleeping if frame time is too short
+        if (deltaTime < FRAME_TIME) {
+            float sleepTime = FRAME_TIME - deltaTime;
+            glfwWaitEventsTimeout(sleepTime);
+            currentFrame = glfwGetTime();
+            deltaTime = currentFrame - lastFrame;
+        }
+
 		lastFrame = currentFrame;
 		if(fCounter > 500) {
-			std::cout << "FPS: " << 1 / deltaTime << std::endl;
+			std::cout << "         FPS: " << 1 / deltaTime << std::endl;
 			fCounter = 0;
 		} else {
 			fCounter++;
 		}
 
-		computeShader.use();
-		computeShader.setFloat("t", currentFrame);
-		glDispatchCompute((unsigned int)TEXTURE_WIDTH/10, (unsigned int)TEXTURE_HEIGHT/10, 1);
 
-		// make sure writing to image has finished before read
-		glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        try {
+            ComputeShader computeShader("cs.cs");
+            // TODO check if shader is loaded
+            computeShader.use();
+            computeShader.setFloat("t", currentFrame);
 
-		// render image to quad
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-		screenQuad.use();
 
-		renderQuad();
+            glDispatchCompute((unsigned int)TEXTURE_WIDTH/10, (unsigned int)TEXTURE_HEIGHT/10, 1);
 
-		// glfw: swap buffers and poll IO events (keys pressed/released, mouse moved etc.)
-		// -------------------------------------------------------------------------------
-		glfwSwapBuffers(window);
-		glfwPollEvents();
+            // make sure writing to image has finished before read
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+            // render image to quad
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            screenQuad.use();
+
+            renderQuad();
+
+            // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved etc.)
+            // -------------------------------------------------------------------------------
+            glfwSwapBuffers(window);
+            glfwPollEvents();
+            glDeleteProgram(computeShader.ID);
+
+        } catch (...) {
+            std::cout << "failed to load compute shader";
+            // TODO load previous good shader
+
+            // goodShader.use();
+            // goodShader.setFloat("t", currentFrame);
+
+        }
+
 	}
 
 
-	glDeleteProgram(computeShader.ID);
+	// glDeleteProgram(computeShader.ID);
 
 	glfwTerminate();
 
@@ -173,3 +204,4 @@ void renderQuad()
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	glBindVertexArray(0);
 } 
+
