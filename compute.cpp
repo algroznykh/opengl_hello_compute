@@ -174,9 +174,9 @@ void audioProcessingLoop() {
 
 bool initCamera() {
     // Try different camera backends
-    camera.open(0, cv::CAP_V4L2); // Try V4L2 first
+    camera.open(2, cv::CAP_V4L2); // Try V4L2 first
     if (!camera.isOpened()) {
-        camera.open(0); // Try default backend
+        camera.open(2); // Try default backend
     }
     
     if (!camera.isOpened()) {
