@@ -281,15 +281,15 @@ void main() {
         }
 
         float[12] ps = float[12](
-            lap(0u) + value.r,
-            lap(1u) + value.g,
-            lap(2u) + value.b,
-            lap(3u),
-            sobx(4u),
+            lap(0u) + value.r/5.,
+            lap(1u) + value.g/5.,
+            lap(2u) + value.b/5.,
+            lap(3u) + sin(tex.b),
+            sobx(4u) + sin(tex.r),
             sobx(5u),
             sobx(6u),
             sobx(7u),
-            soby(8u),
+            soby(8u) + sin(tex.b),
             soby(9u),
             soby(10u),
             soby(11u)
@@ -298,6 +298,7 @@ void main() {
         // Update state
         float[12] xs = get_xy(uint(current_index.x), uint(current_index.y));    
         float[12] state = update(xs, ps);
+
 
         set_xy(uint(current_index.x), uint(current_index.y), state);
     }
@@ -311,7 +312,7 @@ void main() {
     vec4 xrgb = vec4(states_out[0], states_out[1], states_out[2], states_out[3]) + 0.5;
 
     xrgb *=  (length(xrgb) * .5 - pow(length(centered), 2.) ); 
-    xrgb *= length(tex)  ;
+    //xrgb *= length(tex)  ;
 
     //xrgb *= (tex * (1. - radius)) + value ;
     //xrgb *= 1. - radius;

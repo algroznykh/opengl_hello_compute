@@ -12,6 +12,7 @@
 #include <cmath>
 #include <algorithm>
 #include <opencv2/opencv.hpp>
+#include <sys/stat.h>
 
 #include "shader_c.h"
 #include "shader_m.h"
@@ -75,6 +76,21 @@ cv::Mat cameraFrame;
 std::mutex cameraMutex;
 std::thread cameraThread;
 bool cameraRunning = true;
+
+// Shader hot reloading variables
+time_t lastShaderModTime = 0;
+const char* shaderPath = "cs.cs";
+
+bool hasShaderFileChanged() {
+    struct stat fileStat;
+    if (stat(shaderPath, &fileStat) == 0) {
+        if (fileStat.st_mtime != lastShaderModTime) {
+            lastShaderModTime = fileStat.st_mtime;
+            return true;
+        }
+    }
+    return false;
+}
 
 void processInput(GLFWwindow *window) {
     if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
@@ -382,6 +398,9 @@ int main() {
     // Compute shader cache
     ComputeShader* currentComputeShader = nullptr;
     
+    // Initialize shader modification time
+    hasShaderFileChanged();
+    
     // render loop
     int fCounter = 0;
     unsigned int frameCounter = 0;
@@ -408,9 +427,14 @@ int main() {
         }
 
         try {
-            // Only recreate shader if necessary (for hot reloading)
-            if (!currentComputeShader) {
+            // Check for shader file changes and reload if necessary
+            if (!currentComputeShader || hasShaderFileChanged()) {
+                if (currentComputeShader) {
+                    delete currentComputeShader;
+                    std::cout << "Reloading compute shader..." << std::endl;
+                }
                 currentComputeShader = new ComputeShader("cs.cs");
+                std::cout << "Compute shader loaded successfully" << std::endl;
             }
             
             currentComputeShader->use();
@@ -451,9 +475,12 @@ int main() {
             glfwSwapBuffers(window);
             glfwPollEvents();
 
+        } catch (const std::exception& e) {
+            std::cout << "Failed to load compute shader: " << e.what() << std::endl;
+            // Keep using previous shader if it exists
         } catch (...) {
-            std::cout << "Failed to load compute shader" << std::endl;
-            // Keep using previous shader
+            std::cout << "Failed to load compute shader (unknown error)" << std::endl;
+            // Keep using previous shader if it exists
         }
     }
 
