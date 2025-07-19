@@ -34,12 +34,13 @@ void main() {
     // Sample camera input
     vec4 cameraColor = imageLoad(cameraInput, texelCoord);
 
-    // Get audio data - map X coordinate to frequency bin
-    float FFT_SIZE = 1024. ;
-    int audioIndex = int(uv.y * FFT_SIZE); // 256 = FFT_SIZE/2
-    audioIndex = clamp(audioIndex, 0, int(FFT_SIZE)-1);
+    // Get audio data - map Y coordinate to musical scale bins
+    // Musical scale: logarithmic distribution from 20Hz to 20kHz
+    float MUSICAL_BINS = 88.0 * 4.; // Fixed number of musical scale bins
+    int audioIndex = int(uv.y * MUSICAL_BINS);
+    audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS)-1);
     
-    int SPECTRUM_SHIFT = 2;
+    int SPECTRUM_SHIFT = 0;
     float audioMagnitude = imageLoad(audioTexture, ivec2(audioIndex + SPECTRUM_SHIFT, 0)).r;
     audioMagnitude = clamp(audioMagnitude * 200.0, 0.0, 1.0); // Amplify and clamp
     

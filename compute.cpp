@@ -37,9 +37,18 @@ const int SAMPLE_RATE = 44100;
 const int BUFFER_SIZE = 1024;  // Increased for better frequency resolution
 const int FFT_SIZE = BUFFER_SIZE ;     // Must match BUFFER_SIZE for proper processing
 
+// Musical scale frequency mapping
+const float MIN_AUDIBLE_FREQ = 100.0f;    // 20 Hz (close to lowest piano note)
+const float MAX_AUDIBLE_FREQ = 10000.0f; // 20 kHz
+const float FREQ_PER_BIN = (float)SAMPLE_RATE / FFT_SIZE; // ~43 Hz per bin
+const int MIN_BIN = (int)(MIN_AUDIBLE_FREQ / FREQ_PER_BIN);
+const int MAX_BIN = (int)(MAX_AUDIBLE_FREQ / FREQ_PER_BIN);
+const int MUSICAL_BINS = 88 * 4; // Fixed number of bins for musical scale
+
 // Audio data
 std::vector<float> audioBuffer(BUFFER_SIZE);
-std::vector<float> fftMagnitudes(FFT_SIZE/2);
+std::vector<float> fftMagnitudes(MUSICAL_BINS); // Musical scale distributed frequencies
+std::vector<float> rawFFTMagnitudes(FFT_SIZE/2); // Raw FFT data for interpolation
 std::mutex audioMutex;
 bool audioRunning = true;  // Changed to true for continuous operation
 
@@ -123,23 +132,42 @@ void audioProcessingLoop() {
         // Execute FFT
         fftwf_execute(fft_plan);
 
-        // Compute magnitudes with improved scaling
-        float maxMagnitude = 0.0f;
+        // Compute raw FFT magnitudes for all bins
         for (int i = 0; i < FFT_SIZE/2; i++) {
             float real = fft_out[i][0];
             float imag = fft_out[i][1];
-            float magnitude = sqrt(real * real + imag * imag) / FFT_SIZE;
-            maxMagnitude = std::max(maxMagnitude, magnitude);
-            fftMagnitudes[i] = magnitude;
+            rawFFTMagnitudes[i] = sqrt(real * real + imag * imag) / FFT_SIZE;
         }
 
-        // Normalize and apply logarithmic scaling
-        for (int i = 0; i < FFT_SIZE/2; i++) {
-            // if (maxMagnitude > 0.0f) {
-            //     fftMagnitudes[i] = fftMagnitudes[i] / maxMagnitude;
-            // }
-            // Apply logarithmic scaling for better visualization
-            fftMagnitudes[i] = fftMagnitudes[i] > 0.0f ? log10(1.0f + fftMagnitudes[i] * (float(i) / 16. + .1f)) : 0.0f;
+        // Map to logarithmic frequency scale for even overtone spacing
+        for (int i = 0; i < MUSICAL_BINS; i++) {
+            // Logarithmic frequency distribution from MIN_AUDIBLE_FREQ to MAX_AUDIBLE_FREQ
+            float logMinFreq = log2(MIN_AUDIBLE_FREQ);
+            float logMaxFreq = log2(MAX_AUDIBLE_FREQ);
+            float logRange = logMaxFreq - logMinFreq;
+            
+            // Map bin index to logarithmic frequency
+            float logFreq = logMinFreq + (logRange * i) / (MUSICAL_BINS - 1);
+            float targetFreq = pow(2, logFreq);
+            int targetBin = (int)(targetFreq / FREQ_PER_BIN);
+            
+            // Clamp to valid range and interpolate if needed
+            if (targetBin >= 0 && targetBin < FFT_SIZE/2) {
+                fftMagnitudes[i] = rawFFTMagnitudes[targetBin];
+                
+                // Linear interpolation for smoother transitions
+                if (targetBin + 1 < FFT_SIZE/2) {
+                    float exactBin = targetFreq / FREQ_PER_BIN;
+                    float fraction = exactBin - targetBin;
+                    fftMagnitudes[i] = rawFFTMagnitudes[targetBin] * (1.0f - fraction) + 
+                                     rawFFTMagnitudes[targetBin + 1] * fraction;
+                }
+                
+                // Apply logarithmic scaling for better visualization
+                //fftMagnitudes[i] = fftMagnitudes[i] > 0.0f ? log10(1.0f + fftMagnitudes[i] * 10.0f) : 0.0f;
+            } else {
+                fftMagnitudes[i] = 0.0f;
+            }
         }
     }
 }
@@ -278,7 +306,7 @@ int main() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, FFT_SIZE/2, 1, 0, GL_RED, GL_FLOAT, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, MUSICAL_BINS, 1, 0, GL_RED, GL_FLOAT, NULL);
     glBindImageTexture(1, audioTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32F);
 
     // Create camera texture
@@ -365,7 +393,7 @@ int main() {
                 std::lock_guard<std::mutex> lock(audioMutex);
                 glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D, audioTexture);
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, FFT_SIZE/2, 1, GL_RED, GL_FLOAT, fftMagnitudes.data());
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, MUSICAL_BINS, 1, GL_RED, GL_FLOAT, fftMagnitudes.data());
             }
 
             // Update camera texture with camera data (with mutex protection)
