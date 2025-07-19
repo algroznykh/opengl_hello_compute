@@ -30,7 +30,7 @@ const unsigned int TEXTURE_WIDTH = 1000, TEXTURE_HEIGHT = 1000;
 // timing
 float deltaTime = 0.0f;
 float lastFrame = 0.0f;
-const float FPS_CAP = 90.0f;
+const float FPS_CAP = 60.0f;
 const float FRAME_TIME = 1.0f / FPS_CAP;
 
 // Audio constants - Fixed buffer size mismatch

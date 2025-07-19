@@ -203,6 +203,36 @@ vec2 cart(vec2 polar) {
     return cart;
 }
 
+vec4 sampleLoG(image2D img, vec2 uv) {
+    vec2 texSize = vec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+    vec2 pixelCoord = uv * texSize;
+    ivec2 coord = ivec2(pixelCoord);
+    
+    // 5x5 Laplacian of Gaussian kernel (approximation)
+    // Values normalized for unity gain
+    float kernel[25] = float[25](
+        0.0,  0.0, -1.0,  0.0,  0.0,
+        0.0, -1.0, -2.0, -1.0,  0.0,
+       -1.0, -2.0, 16.0, -2.0, -1.0,
+        0.0, -1.0, -2.0, -1.0,  0.0,
+        0.0,  0.0, -1.0,  0.0,  0.0
+    );
+    
+    vec4 result = vec4(0.0);
+    
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
+            ivec2 sampleCoord = coord + ivec2(x, y);
+            sampleCoord = clamp(sampleCoord, ivec2(0), ivec2(texSize) - 1);
+            
+            int kernelIndex = (y + 2) * 5 + (x + 2);
+            result += imageLoad(img, sampleCoord) * kernel[kernelIndex];
+        }
+    }
+    
+    return result / 16.0; // Normalize
+}
+
 void main() {
     ivec2 screen_size = imageSize(outputTexture);
     ivec2 fragCoord = ivec2(gl_GlobalInvocationID.xy);
@@ -228,7 +258,8 @@ void main() {
     // Get audio data - map angle to musical scale bins for circular spectrogram
     float MUSICAL_BINS = 88.0 * 4.; // Fixed number of musical scale bins
     //int audioIndex = int((1.-radius) * MUSICAL_BINS);
-    int audioIndex = int((uv.y) * MUSICAL_BINS);
+    // SPECTRAL
+    int audioIndex = int((uv.y ) * MUSICAL_BINS);
     audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS)-1);
     
     int SPECTRUM_SHIFT = 0;
@@ -254,9 +285,13 @@ void main() {
     //back *= angle < .9 ? 1.: 1. - angle;
     back *= angle < 1. ? 1.: 1. - angle;
     back += vec4(spectrum, 1.);
+    //back *= .99;
     imageStore(backbuffer, texelCoord, back);
 
+    //finalColor += .1 * sampleLoG(backbuffer, polar.xy).rgb;
     finalColor += sampleBilinear(backbuffer, polar.yx).rgb;
+
+    finalColor *= length(finalColor) > .5 ? 1. : 0.;
     
     vec4 value = vec4(finalColor, 1.0);
 
@@ -282,13 +317,13 @@ void main() {
         }
 
         float[12] ps = float[12](
-            lap(0u) - value.r/2. - tex.x * radius * 15.,
-            lap(1u) - value.g/2. - tex.y * radius * 5.,
-            lap(2u) - value.b/2. - tex.z * radius * 5.,
+            lap(0u), // + value.r - tex.x * radius * 5.,
+            lap(1u),// + value.g  - tex.y * radius * 5.,
+            lap(2u),// + value.b  - tex.z * radius * 5.,
             lap(3u) - tex.b * 2.,
             sobx(4u) - tex.r * 2.,
-            sobx(5u),
-            sobx(6u),
+            sobx(5u), 
+            sobx(6u), 
             sobx(7u),
             soby(8u) - tex.b * 2.,
             soby(9u),
@@ -299,6 +334,9 @@ void main() {
         // Update state
         float[12] xs = get_xy(uint(current_index.x), uint(current_index.y));    
         float[12] state = update(xs, ps);
+        for (uint s = 0u; s < N; s++) {
+            state[s] *= length(value) > 1.2? 1. : length(tex) ;
+            }
 
 
         set_xy(uint(current_index.x), uint(current_index.y), state);
@@ -313,7 +351,15 @@ void main() {
     vec4 xrgb = vec4(states_out[0], states_out[1], states_out[2], states_out[3]) + 0.5;
 
     xrgb *=  (length(xrgb) * .5 - pow(length(centered), 2.) ); 
-    //xrgb *= length(tex)  ;
+    // xrgb *= length(value) > 3.9 ? length(value) : 0.  ;
+    //xrgb = vec4(finalColor, 1.);
+
+    xrgb -= (.8 - length(centered));
+    xrgb *= 2.;
+
+    xrgb += tex * pow((1. - length(centered)), 1.) * 12.;
+
+    //xrgb *= vec4(finalColor, 1.);
 
     //xrgb *= (tex * (1. - radius)) + value ;
     //xrgb *= 1. - radius;
