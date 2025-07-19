@@ -22,8 +22,8 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
 
 void renderQuad();
 
-const unsigned int SCR_WIDTH = 800;
-const unsigned int SCR_HEIGHT = 600;
+const unsigned int SCR_WIDTH = 2560;
+const unsigned int SCR_HEIGHT = 1600;
 const unsigned int TEXTURE_WIDTH = 1000, TEXTURE_HEIGHT = 1000;
 
 // timing
@@ -332,6 +332,33 @@ int main() {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, TEXTURE_WIDTH, TEXTURE_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
     glBindImageTexture(3, backbufferTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
 
+    // Create storage buffer for simulation states
+    const unsigned int SIM_WIDTH = SCR_WIDTH;
+    const unsigned int SIM_HEIGHT = SCR_HEIGHT;
+    const unsigned int N_CHANNELS = 12;
+    const size_t stateBufferSize = SIM_WIDTH * SIM_HEIGHT * N_CHANNELS * sizeof(float);
+    
+    unsigned int stateBuffer;
+    glGenBuffers(1, &stateBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, stateBufferSize, NULL, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, stateBuffer);
+
+    // Create uniform buffer for frame counter and other uniforms
+    struct UniformData {
+        float kernel[9]; // mat3 = 9 floats
+        unsigned int filter_type;
+        unsigned int frame;
+        float padding[2]; // for alignment
+    };
+    UniformData uniformData = {};
+    
+    unsigned int uniformBuffer;
+    glGenBuffers(1, &uniformBuffer);
+    glBindBuffer(GL_UNIFORM_BUFFER, uniformBuffer);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(UniformData), &uniformData, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 4, uniformBuffer);
+
     // Initialize audio system
     if (!initAudio()) {
         std::cerr << "Failed to initialize audio system" << std::endl;
@@ -357,6 +384,7 @@ int main() {
     
     // render loop
     int fCounter = 0;
+    unsigned int frameCounter = 0;
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = glfwGetTime();
         deltaTime = currentFrame - lastFrame;
@@ -387,6 +415,12 @@ int main() {
             
             currentComputeShader->use();
             currentComputeShader->setFloat("t", currentFrame);
+            
+            // Update uniform buffer with frame counter
+            frameCounter++;
+            uniformData.frame = frameCounter;
+            glBindBuffer(GL_UNIFORM_BUFFER, uniformBuffer);
+            glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &uniformData);
 
             // Update audio texture with FFT data (with mutex protection)
             {
