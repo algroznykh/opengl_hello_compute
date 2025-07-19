@@ -228,7 +228,7 @@ void main() {
     // Get audio data - map angle to musical scale bins for circular spectrogram
     float MUSICAL_BINS = 88.0 * 4.; // Fixed number of musical scale bins
     //int audioIndex = int((1.-radius) * MUSICAL_BINS);
-    int audioIndex = int((1.-uv.y) * MUSICAL_BINS);
+    int audioIndex = int((uv.y) * MUSICAL_BINS);
     audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS)-1);
     
     int SPECTRUM_SHIFT = 0;
@@ -270,6 +270,7 @@ void main() {
 
         // Initial state
         if (frame == 1u) {
+            return;
             float[12] init_s;
             for (uint s = 0u; s < N; s++) {
                 float a = 0.01;
@@ -281,15 +282,15 @@ void main() {
         }
 
         float[12] ps = float[12](
-            lap(0u) + value.r/5.,
-            lap(1u) + value.g/5.,
-            lap(2u) + value.b/5.,
-            lap(3u) + sin(tex.b),
-            sobx(4u) + sin(tex.r),
+            lap(0u) - value.r/2. - tex.x * radius * 15.,
+            lap(1u) - value.g/2. - tex.y * radius * 5.,
+            lap(2u) - value.b/2. - tex.z * radius * 5.,
+            lap(3u) - tex.b * 2.,
+            sobx(4u) - tex.r * 2.,
             sobx(5u),
             sobx(6u),
             sobx(7u),
-            soby(8u) + sin(tex.b),
+            soby(8u) - tex.b * 2.,
             soby(9u),
             soby(10u),
             soby(11u)

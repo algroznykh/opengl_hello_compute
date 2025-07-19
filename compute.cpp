@@ -430,11 +430,25 @@ int main() {
             // Check for shader file changes and reload if necessary
             if (!currentComputeShader || hasShaderFileChanged()) {
                 if (currentComputeShader) {
-                    delete currentComputeShader;
                     std::cout << "Reloading compute shader..." << std::endl;
+                    try {
+                        ComputeShader* newShader = new ComputeShader("cs.cs");
+                        // Only delete old shader if new one compiled successfully
+                        delete currentComputeShader;
+                        currentComputeShader = newShader;
+                        std::cout << "Compute shader reloaded successfully" << std::endl;
+                    } catch (const std::exception& e) {
+                        std::cout << "Failed to reload compute shader: " << e.what() << std::endl;
+                        std::cout << "Keeping previous working version" << std::endl;
+                        // Keep using the old shader
+                    } catch (...) {
+                        std::cout << "Failed to reload compute shader (unknown error) - keeping previous version" << std::endl;
+                        // Keep using the old shader
+                    }
+                } else {
+                    currentComputeShader = new ComputeShader("cs.cs");
+                    std::cout << "Compute shader loaded successfully" << std::endl;
                 }
-                currentComputeShader = new ComputeShader("cs.cs");
-                std::cout << "Compute shader loaded successfully" << std::endl;
             }
             
             currentComputeShader->use();
