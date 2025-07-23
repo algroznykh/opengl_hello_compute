@@ -106,14 +106,29 @@ float R(int dx, int dy, uint c) {
     return get_xyc(x, y, c);
 }
 
+mat2 rot(float q) {
+    return mat2(cos(q), -sin(q), sin(q), cos(q));
+}
+
 float lap(uint c) {
     return R(1,1,c) + R(1,-1,c) + R(-1,1,c) + R(-1,-1,c) 
         + 2.0 * (R(0,1,c) + R(0,-1,c) + R(1,0,c) + R(-1,0,c)) - 12.0*R(0,0,c);
 }
 
+
 float sobx(uint c) {
-    return R(-1, 1, c) + R(-1, 0, c)*2.0 + R(-1,-1, c)
-          -R( 1, 1, c) - R( 1, 0, c)*2.0 - R( 1,-1, c);
+    // return R(-1, 1, c) + R(-1, 0, c)*2.0 + R(-1,-1, c)
+    //       -R( 1, 1, c) - R( 1, 0, c)*2.0 - R( 1,-1, c);
+    mat3 f = mat3(1, 2, 1, 
+                  0, 0, 0, 
+                  -1, -2, -1);
+
+    // f = rot(0) * f; 
+
+    float res = f[0][0] * R(-1, 1, c) + f[1][0] * R(-1, 0, c) + f[2][0] * R(-1,-1, c)
+              + f[0][1] * R(0, 1, c) + f[1][1] * R(0, 0, c) + f[2][1] * R(0, -1, c)   
+              + f[0][2] * R( 1, 1, c) + f[1][2] * R( 1, 0, c) + f[2][2] * R( 1,-1, c);
+    return res;
 }
 
 float soby(uint c) {
@@ -259,7 +274,7 @@ void main() {
     float MUSICAL_BINS = 88.0 * 4.; // Fixed number of musical scale bins
     //int audioIndex = int((1.-radius) * MUSICAL_BINS);
     // SPECTRAL
-    int audioIndex = int((uv.y ) * MUSICAL_BINS);
+    int audioIndex = int((uv.y / 1.) * MUSICAL_BINS);
     audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS)-1);
     
     int SPECTRUM_SHIFT = 0;
@@ -270,7 +285,7 @@ void main() {
     // Use radius for intensity instead of x coordinate
     //float intensity = angle < 0.01 ? 1. : 0.;
     float intensity = uv.x > .99 ? 1. : 0.;
-    vec3 spectrum = color * intensity;
+    vec3 spectrum = color * intensity * 2.;
     vec3 finalColor ;
     
     // Add radial grid lines
@@ -284,14 +299,14 @@ void main() {
     //vec4 back = sampleBilinear(backbuffer, rotatedUV);
     //back *= angle < .9 ? 1.: 1. - angle;
     back *= angle < 1. ? 1.: 1. - angle;
-    back += vec4(spectrum, 1.);
-    //back *= .99;
+    back += vec4(spectrum, 1.) * vec4(.99, .98, .97, 1.);
+    back *= vec4(.9995, .99, .9995, 1.);
     imageStore(backbuffer, texelCoord, back);
 
-    //finalColor += .1 * sampleLoG(backbuffer, polar.xy).rgb;
-    finalColor += sampleBilinear(backbuffer, polar.yx).rgb;
+    finalColor +=1. *   sampleLoG(backbuffer, polar.yx).rgb;
+    finalColor *= .15 * sampleBilinear(backbuffer, polar.yx).rgb;
 
-    finalColor *= length(finalColor) > .5 ? 1. : 0.;
+    //finalColor *= length(finalColor) > .5 ? 1. : 0.;
     
     vec4 value = vec4(finalColor, 1.0);
 
@@ -317,7 +332,7 @@ void main() {
         }
 
         float[12] ps = float[12](
-            lap(0u), // + value.r - tex.x * radius * 5.,
+            lap(0u) + value.r * 2. - tex.x * radius * 5.,
             lap(1u),// + value.g  - tex.y * radius * 5.,
             lap(2u),// + value.b  - tex.z * radius * 5.,
             lap(3u) - tex.b * 2.,
@@ -335,7 +350,7 @@ void main() {
         float[12] xs = get_xy(uint(current_index.x), uint(current_index.y));    
         float[12] state = update(xs, ps);
         for (uint s = 0u; s < N; s++) {
-            state[s] *= length(value) > 1.2? 1. : length(tex) ;
+            state[s] *= length(value) > 3? length(value) / (4. + float(s))  : (1. - length(centered) / 20.) - length(tex) / 1.  ;
             }
 
 
@@ -354,12 +369,12 @@ void main() {
     // xrgb *= length(value) > 3.9 ? length(value) : 0.  ;
     //xrgb = vec4(finalColor, 1.);
 
-    xrgb -= (.8 - length(centered));
-    xrgb *= 2.;
+    //xrgb -= (.8 - length(centered));
+    xrgb *= 4.;
 
-    xrgb += tex * pow((1. - length(centered)), 1.) * 12.;
+    //xrgb *= tex * .;//* pow((1. - length(centered)), 1.) * 12.;
 
-    //xrgb *= vec4(finalColor, 1.);
+    //xrgb = 1. -  vec4(finalColor, 1.) / 4.;
 
     //xrgb *= (tex * (1. - radius)) + value ;
     //xrgb *= 1. - radius;
