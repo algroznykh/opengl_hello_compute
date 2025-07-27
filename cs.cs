@@ -8,6 +8,9 @@ layout(r32f, binding = 1) uniform image2D audioTexture;              // glBindIm
 layout(rgba8, binding = 2) uniform image2D camTexture;               // glBindImageTexture(2, ...)
 layout(rgba32f, binding = 3) uniform image2D backbuffer;
 
+
+layout (location = 0) uniform float time;                 /** Time */
+
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
     mat3 kernel;
@@ -85,6 +88,16 @@ uint SH = imageSize(outputTexture).y;
 ivec2 current_index;
 
 // Helper functions
+
+float circle(vec2 p, float r) {
+    return length(p) - r;
+}
+
+float sdPolarCircle(float r_pos, float theta_pos, float radius) {
+    float d_sq = r_pos*r_pos - 2.0*r_pos*cos(- theta_pos);
+    return sqrt(d_sq) - radius;
+}
+
 float[12] get_xy(uint x, uint y) {
     uint i = x + y * SW;
     return states[i];
@@ -256,8 +269,12 @@ void main() {
     vec2 uv = vec2(texelCoord.xy) / vec2(imgSize);
     vec2 centered = uv - 0.5;
     centered *= 2.;
+    vec2 ratio = centered * vec2(float(screen_size.x)/float(screen_size.y), 1.);
+    centered = ratio;
+
     float radius = length(centered);
     float angle = atan(centered.y, centered.x);
+    float s = time / 2.5;
     
     // Normalize angle to [0, 1] range
     angle = (angle + 3.14159) / (2.0 * 3.14159);
@@ -271,44 +288,48 @@ void main() {
     vec4 cameraColor = imageLoad(camTexture, texelCoord);
 
     // Get audio data - map angle to musical scale bins for circular spectrogram
-    float MUSICAL_BINS = 88.0 * 4.; // Fixed number of musical scale bins
+    float MUSICAL_BINS = 88.0 * 3.; // Fixed number of musical scale bins
     //int audioIndex = int((1.-radius) * MUSICAL_BINS);
     // SPECTRAL
-    int audioIndex = int((uv.y / 1.) * MUSICAL_BINS);
+    int audioIndex = int(( 1. -radius / 1.) * MUSICAL_BINS);
     audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS)-1);
     
     int SPECTRUM_SHIFT = 0;
+    //audioIndex = int((1. - radius) * SH) * 8.;
     float audioMagnitude = imageLoad(audioTexture, ivec2(audioIndex + SPECTRUM_SHIFT, 0)).r;
     audioMagnitude = clamp(audioMagnitude * 200.0, 0.0, 1.0); // Amplify and clamp
     
     vec3 color = vec3(audioMagnitude);
     // Use radius for intensity instead of x coordinate
     //float intensity = angle < 0.01 ? 1. : 0.;
-    float intensity = uv.x > .99 ? 1. : 0.;
+    float intensity = abs(angle - fract(s)) < 0.01 ? 1. : 0.;
+    intensity *= 1. - radius;
     vec3 spectrum = color * intensity * 2.;
     vec3 finalColor ;
     
-    // Add radial grid lines
-    float gridAngle = mod(angle * 32.0, 1.0);
-    float gridRadius = mod(radius * 16.0, 1.0);
-    if (gridAngle < 0.05 || gridRadius < 0.05) {
-        finalColor += vec3(0.02);
-    }
     
-    vec4 back = imageLoad(backbuffer, texelCoord + ivec2(1, 0));
+    //vec4 back = imageLoad(backbuffer, texelCoord + ivec2(1, 0));
+    vec4 back = imageLoad(backbuffer, texelCoord);
     //vec4 back = sampleBilinear(backbuffer, rotatedUV);
     //back *= angle < .9 ? 1.: 1. - angle;
-    back *= angle < 1. ? 1.: 1. - angle;
-    back += vec4(spectrum, 1.) * vec4(.99, .98, .97, 1.);
-    back *= vec4(.9995, .99, .9995, 1.);
+    //back *= angle < 1. ? 1.: 1. - angle;
+    //back += angle + fract(time) < 1.? vec4(spectrum, 1.) : vec4(0.);
+    //back += vec4(spectrum, 1.);
+    back = max(back,vec4(spectrum,1.));
+
+    back *= .995;
+    //back += vec4(spectrum, 1.) * vec4(.99, .98, .97, 1.);
+    //back *= vec4(.9995, .99, .9995, 1.);
     imageStore(backbuffer, texelCoord, back);
 
-    finalColor +=1. *   sampleLoG(backbuffer, polar.yx).rgb;
-    finalColor *= .15 * sampleBilinear(backbuffer, polar.yx).rgb;
+    //finalColor +=1. *   sampleLoG(backbuffer, uv).rgb;
+    //finalColor *= .15 * sampleBilinear(backbuffer, uv).rgb;
+    finalColor += back.rgb;
 
     //finalColor *= length(finalColor) > .5 ? 1. : 0.;
     
     vec4 value = vec4(finalColor, 1.0);
+    value *= 1. - radius;
 
     vec4 tex = camlap(fragCoord);
     if (gl_GlobalInvocationID.x >= uint(screen_size.x) || gl_GlobalInvocationID.y >= uint(screen_size.y)) { 
@@ -318,29 +339,16 @@ void main() {
     if (gl_GlobalInvocationID.x < SW && gl_GlobalInvocationID.y < SH) { 
         current_index = ivec2(int(gl_GlobalInvocationID.x), int(gl_GlobalInvocationID.y));
 
-        // Initial state
-        if (frame == 1u) {
-            return;
-            float[12] init_s;
-            for (uint s = 0u; s < N; s++) {
-                float a = 0.01;
-                float rand = fract(sin(float((gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * SW) * (s+1)) / float(SW)) * 353348.5453123) + a;
-                init_s[s] = floor(rand);
-            }
-            set_xy(uint(current_index.x), uint(current_index.y), init_s);
-            return;
-        }
-
         float[12] ps = float[12](
-            lap(0u) + value.r * 2. - tex.x * radius * 5.,
+            lap(0u),// + value.r * 2. - tex.x * radius * 5.,
             lap(1u),// + value.g  - tex.y * radius * 5.,
             lap(2u),// + value.b  - tex.z * radius * 5.,
-            lap(3u) - tex.b * 2.,
-            sobx(4u) - tex.r * 2.,
+            lap(3u),// - tex.b * 2.,
+            sobx(4u),// - tex.r * 2.,
             sobx(5u), 
             sobx(6u), 
             sobx(7u),
-            soby(8u) - tex.b * 2.,
+            soby(8u),// - tex.b * 2.,
             soby(9u),
             soby(10u),
             soby(11u)
@@ -350,7 +358,8 @@ void main() {
         float[12] xs = get_xy(uint(current_index.x), uint(current_index.y));    
         float[12] state = update(xs, ps);
         for (uint s = 0u; s < N; s++) {
-            state[s] *= length(value) > 3? length(value) / (4. + float(s))  : (1. - length(centered) / 20.) - length(tex) / 1.  ;
+            //state[s] *= length(value) > 3? length(value) / (4. + float(s))  : (1. - length(centered) / 20.) - length(tex) / 1.  ;
+            state[s] *= length(back);
             }
 
 
@@ -363,14 +372,13 @@ void main() {
 
     // Output to screen
     float[12] states_out = get_xy(idxs, idys);
-    vec4 xrgb = vec4(states_out[0], states_out[1], states_out[2], states_out[3]) + 0.5;
+    vec4 xrgb = vec4(states_out[0], states_out[1], states_out[2], states_out[3]) ;
 
     xrgb *=  (length(xrgb) * .5 - pow(length(centered), 2.) ); 
     // xrgb *= length(value) > 3.9 ? length(value) : 0.  ;
     //xrgb = vec4(finalColor, 1.);
 
     //xrgb -= (.8 - length(centered));
-    xrgb *= 4.;
 
     //xrgb *= tex * .;//* pow((1. - length(centered)), 1.) * 12.;
 
@@ -379,6 +387,22 @@ void main() {
     //xrgb *= (tex * (1. - radius)) + value ;
     //xrgb *= 1. - radius;
 
+    //xrgb *= max(tex, cameraColor);
+    //xrgb += spectrum.xxxx;
+    //xrgb.r = fract(angle - time);
+    //xrgb = value;
+
+
+
+    float dial = step(circle(ratio, .85), .0);
+    int nc = 16;
+    float shift = .2;
+    float sr = .12;
+    for (int i=0; i<=nc; i++) {
+        dial += step(circle(ratio + vec2(sin(shift + i/float(nc) * 2.*acos(-1.)), cos(shift + i/float(nc) * 2*acos(-1.))), sr), .0);
+    }
+
+    xrgb *= dial.xxxx;
 
     imageStore(outputTexture, fragCoord, xrgb);
 }

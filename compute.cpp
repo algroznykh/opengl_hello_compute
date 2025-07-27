@@ -25,7 +25,9 @@ void renderQuad();
 
 const unsigned int SCR_WIDTH = 2560;
 const unsigned int SCR_HEIGHT = 1600;
-const unsigned int TEXTURE_WIDTH = 1000, TEXTURE_HEIGHT = 1000;
+const unsigned int TEXTURE_WIDTH = SCR_WIDTH / 2, TEXTURE_HEIGHT = SCR_HEIGHT / 2;
+
+const unsigned int CAMERA_DEV = 2;
 
 // timing
 float deltaTime = 0.0f;
@@ -190,9 +192,9 @@ void audioProcessingLoop() {
 
 bool initCamera() {
     // Try different camera backends
-    camera.open(0, cv::CAP_V4L2); // Try V4L2 first
+    camera.open(CAMERA_DEV, cv::CAP_V4L2); // Try V4L2 first
     if (!camera.isOpened()) {
-        camera.open(0); // Try default backend
+        camera.open(CAMERA_DEV); // Try default backend
     }
     
     if (!camera.isOpened()) {
@@ -303,16 +305,16 @@ int main() {
     screenQuad.setInt("tex", 0);
 
     // Create main texture
-    unsigned int texture;
-    glGenTextures(1, &texture);
+    unsigned int outputTexture;
+    glGenTextures(1, &outputTexture);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, texture);
+    glBindTexture(GL_TEXTURE_2D, outputTexture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, TEXTURE_WIDTH, TEXTURE_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
-    glBindImageTexture(0, texture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+    glBindImageTexture(0, outputTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
 
     // Create audio texture for FFT data
     glGenTextures(1, &audioTexture);
@@ -365,7 +367,8 @@ int main() {
         float kernel[9]; // mat3 = 9 floats
         unsigned int filter_type;
         unsigned int frame;
-        float padding[2]; // for alignment
+        float time;
+        float padding[1]; // for alignment
     };
     UniformData uniformData = {};
     
@@ -452,11 +455,12 @@ int main() {
             }
             
             currentComputeShader->use();
-            currentComputeShader->setFloat("t", currentFrame);
+            currentComputeShader->setFloat("time", currentFrame);
             
-            // Update uniform buffer with frame counter
+            // Update uniform buffer with frame counter and time
             frameCounter++;
             uniformData.frame = frameCounter;
+            uniformData.time = currentFrame;
             glBindBuffer(GL_UNIFORM_BUFFER, uniformBuffer);
             glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &uniformData);
 
