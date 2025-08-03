@@ -17,8 +17,77 @@
 #include "shader_c.h"
 #include "shader_m.h"
 
+// Global texture and buffer handles for recreation
+unsigned int outputTexture, audioTexture, cameraTexture, backbufferTexture;
+unsigned int stateBuffer, positionBuffer, velocityBuffer, trailGridBuffer, agentGridBuffer, angleBuffer;
+unsigned int uniformBuffer;
+bool texturesInitialized = false;
+
+void recreateTextures(int width, int height);
+
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
+    extern unsigned int SCR_WIDTH, SCR_HEIGHT, TEXTURE_WIDTH, TEXTURE_HEIGHT;
+    SCR_WIDTH = width;
+    SCR_HEIGHT = height;
+    TEXTURE_WIDTH = width;
+    TEXTURE_HEIGHT = height;
+    
+    std::cout << "Window resized to: " << width << "x" << height << std::endl;
+    
+    if (texturesInitialized) {
+        recreateTextures(width, height);
+    }
+}
+
+void recreateTextures(int width, int height) {
+    // Recreate main texture
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, outputTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, NULL);
+    glBindImageTexture(0, outputTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+    
+    // Recreate camera texture
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, cameraTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_BGR, GL_UNSIGNED_BYTE, NULL);
+    glBindImageTexture(2, cameraTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
+    
+    // Recreate backbuffer texture
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, backbufferTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, NULL);
+    glBindImageTexture(3, backbufferTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+    
+    // Recreate simulation state buffer
+    const unsigned int N_CHANNELS = 12;
+    const size_t stateBufferSize = width * height * N_CHANNELS * sizeof(float);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, stateBufferSize, NULL, GL_DYNAMIC_DRAW);
+    
+    // Recreate trail grid buffer (uses width as grid size)
+    const unsigned int GRID_SIZE = width;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, trailGridBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    
+    // Recreate agent grid buffer
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, agentGridBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * 4 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    
+    // Clear agent position buffer to force reinitialization at new resolution
+    const unsigned int AGENT_COUNT = 10000;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, positionBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * 2 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    
+    // Clear agent velocity buffer
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, velocityBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * 2 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    
+    // Clear angle buffer
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, angleBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    
+    std::cout << "Textures and buffers recreated for resolution: " << width << "x" << height << std::endl;
 }
 
 void renderQuad();
@@ -56,11 +125,7 @@ std::vector<float> rawFFTMagnitudes(FFT_SIZE/2); // Raw FFT data for interpolati
 std::mutex audioMutex;
 bool audioRunning = true;  // Changed to true for continuous operation
 
-// Audio texture
-unsigned int audioTexture;
-
-// Camera texture
-unsigned int cameraTexture;
+// Audio and camera textures (declared globally above)
 
 // FFT variables
 fftwf_complex *fft_in;
@@ -266,21 +331,22 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    // Get the primary monitor and its video mode to determine screen resolution
-    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-    SCR_WIDTH = mode->width;
-    SCR_HEIGHT = mode->height;
-    TEXTURE_WIDTH = SCR_WIDTH;
-    TEXTURE_HEIGHT = SCR_HEIGHT;
-
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "COMPUTE", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(800, 600, "COMPUTE", NULL, NULL);
     if (window == NULL) {
         std::cout << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
         return -1;
     }
+    
+    // Get the actual window resolution
+    int windowWidth, windowHeight;
+    glfwGetWindowSize(window, &windowWidth, &windowHeight);
+    SCR_WIDTH = windowWidth;
+    SCR_HEIGHT = windowHeight;
+    TEXTURE_WIDTH = SCR_WIDTH;
+    TEXTURE_HEIGHT = SCR_HEIGHT;
     glfwMakeContextCurrent(window);
+    std::cout << "Resolution: " << SCR_WIDTH << "x" << SCR_HEIGHT << std::endl;
 
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glfwSwapInterval(0);
@@ -314,7 +380,6 @@ int main() {
     screenQuad.setInt("tex", 0);
 
     // Create main texture
-    unsigned int outputTexture;
     glGenTextures(1, &outputTexture);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, outputTexture);
@@ -348,7 +413,6 @@ int main() {
     glBindImageTexture(2, cameraTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
     
     // Create backbuffer texture
-    unsigned int backbufferTexture;
     glGenTextures(1, &backbufferTexture);
     glActiveTexture(GL_TEXTURE3);
     glBindTexture(GL_TEXTURE_2D, backbufferTexture);
@@ -365,11 +429,44 @@ int main() {
     const unsigned int N_CHANNELS = 12;
     const size_t stateBufferSize = SIM_WIDTH * SIM_HEIGHT * N_CHANNELS * sizeof(float);
     
-    unsigned int stateBuffer;
     glGenBuffers(1, &stateBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBuffer);
     glBufferData(GL_SHADER_STORAGE_BUFFER, stateBufferSize, NULL, GL_DYNAMIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, stateBuffer);
+    
+    // Create agent simulation buffers
+    const unsigned int AGENT_COUNT = 10000;
+    const unsigned int GRID_SIZE = SCR_WIDTH; // Use screen width as grid resolution
+    
+    // Position buffer (vec2 per agent) - initialize with zeros, let shader handle initialization
+    glGenBuffers(1, &positionBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, positionBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * 2 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, positionBuffer);
+    
+    // Velocity buffer (vec2 per agent)
+    glGenBuffers(1, &velocityBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, velocityBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * 2 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, velocityBuffer);
+    
+    // Trail grid buffer (float per grid cell)
+    glGenBuffers(1, &trailGridBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, trailGridBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, trailGridBuffer);
+    
+    // Agent grid buffer (vec4 per grid cell)
+    glGenBuffers(1, &agentGridBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, agentGridBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * 4 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, agentGridBuffer);
+    
+    // Angle buffer (float per agent)
+    glGenBuffers(1, &angleBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, angleBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, angleBuffer);
 
     // Create uniform buffer for frame counter and other uniforms
     struct UniformData {
@@ -377,11 +474,12 @@ int main() {
         unsigned int filter_type;
         unsigned int frame;
         float time;
-        float padding[1]; // for alignment
+        unsigned int agentCount;
+        float padding[3]; // for alignment
     };
     UniformData uniformData = {};
+    uniformData.agentCount = 10000; // Number of agents
     
-    unsigned int uniformBuffer;
     glGenBuffers(1, &uniformBuffer);
     glBindBuffer(GL_UNIFORM_BUFFER, uniformBuffer);
     glBufferData(GL_UNIFORM_BUFFER, sizeof(UniformData), &uniformData, GL_DYNAMIC_DRAW);
@@ -406,6 +504,8 @@ int main() {
     if (cameraAvailable) {
         cameraThread = std::thread(cameraProcessingLoop);
     }
+    
+    texturesInitialized = true;
 
     // Compute shader cache
     ComputeShader* currentComputeShader = nullptr;
@@ -470,6 +570,7 @@ int main() {
             frameCounter++;
             uniformData.frame = frameCounter;
             uniformData.time = currentFrame;
+            uniformData.agentCount = 10000;
             glBindBuffer(GL_UNIFORM_BUFFER, uniformBuffer);
             glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &uniformData);
 
@@ -492,7 +593,7 @@ int main() {
             }
 
             glDispatchCompute((unsigned int)TEXTURE_WIDTH/10, (unsigned int)TEXTURE_HEIGHT/10, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
 
             // Render
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);

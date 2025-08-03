@@ -16,11 +16,34 @@ layout(std140, binding = 4) uniform Uniforms {
     mat3 kernel;
     uint filter_type;
     uint frame;
+    uint agentCount;
 };
+
 
 // Storage buffer for states - binding 5 (avoiding conflict with image bindings)
 layout(std430, binding = 5) restrict buffer StateBuffer {
     float states[][12];
+};
+
+// Agent simulation buffers - binding 6-10
+layout(std430, binding = 6) restrict buffer PositionBuffer {
+    vec2 positions[];
+};
+
+layout(std430, binding = 7) restrict buffer VelocityBuffer {
+    vec2 velocities[];
+};
+
+layout(std430, binding = 8) restrict buffer TrailGridBuffer {
+    float trailGrid[];
+};
+
+layout(std430, binding = 9) restrict buffer AgentGridBuffer {
+    vec4 agentGrid[];
+};
+
+layout(std430, binding = 10) restrict buffer AngleBuffer {
+    float angles[];
 };
 
 // Constants
@@ -81,8 +104,9 @@ const int[48][12] W = int[48][12](
 );
 
 // Simulation size
-uint SW = imageSize(outputTexture).x / 1;
-uint SH = imageSize(outputTexture).y / 1;
+uint FACTOR = 1;
+uint SW = imageSize(outputTexture).x / FACTOR;
+uint SH = imageSize(outputTexture).y / FACTOR;
 
 // Global variable for current index
 ivec2 current_index;
@@ -117,6 +141,43 @@ float R(int dx, int dy, uint c) {
     uint x = (uint(current_index.x + dx) + SW) % SW;
     uint y = (uint(current_index.y + dy) + SH) % SH;
     return get_xyc(x, y, c);
+}
+
+// Agent simulation functions
+float r(float n) {
+    float x = sin(n) * 43758.5453;
+    return fract(x);
+}
+
+int gridIndex(vec2 p) {
+    vec2 pos = mod(p, float(SW));
+    return int(pos.x) + int(pos.y) * int(SW);
+}
+
+vec2 rotate(vec2 vec, float angle) {
+    float cs = cos(angle);
+    float sn = sin(angle);
+    return vec2(
+        vec.x * cs - vec.y * sn,
+        vec.x * sn + vec.y * cs
+    );
+}
+
+float triangle(vec2 pin, float r) {
+    float k = sqrt(3.0);
+    vec2 p = pin;
+    p.x = abs(p.x) - r;
+    p.y = p.y + r/k;
+    if(p.x + k*p.y > 0.0) {
+        p = vec2(p.x - k*p.y, -k*p.x - p.y) / 2.0;
+    }
+    p.x -= clamp(p.x, -2.0*r, 0.0);
+    return -length(p) * sign(p.y);
+}
+
+float box(vec2 p, vec2 b) {
+    vec2 d = abs(p) - b;
+    return length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0);
 }
 
 mat2 rot(float q) {
@@ -336,6 +397,145 @@ void main() {
         return; 
     }
 
+    // Full slime mold simulation - many agents in circle
+    if (gl_GlobalInvocationID.x == 0u && gl_GlobalInvocationID.y == 0u) {
+        ivec2 texSize = imageSize(outputTexture);
+        vec2 center = vec2(float(texSize.x) / 2.0, float(texSize.y) / 2.0);
+        uint numAgents = 5000u; // Many agents for full effect
+        
+        for (uint agentId = 0u; agentId < numAgents; agentId++) {
+            vec2 p = positions[agentId];
+            
+            // Initialize agent if it's at origin
+            if (length(p) < 1.0) {
+                // Force first few agents to exact center for debugging
+                if (agentId < 10u) {
+                    p = center; // Exact center
+                    velocities[agentId] = vec2(1.0, 0.0); // Move right
+                } else {
+                    float seed = float(agentId) / float(numAgents) ;
+                    float agentAngle = 6.28318 * seed; // 2*PI * seed for full circle
+                    float radius = 100.0; // Smaller radius, closer to center
+                    p = center + radius * vec2(cos(agentAngle), sin(agentAngle));
+                    velocities[agentId] = normalize(vec2(cos(agentAngle), sin(agentAngle))) * 0.8;
+                }
+            }
+            
+            // Agent sensing and steering behavior
+            vec2 v = velocities[agentId];
+            
+            // Simple sensing - sample trail strength in front, left, right
+            float sensorAngle = 0.5; // sensor angle
+            float sensorDist = 15.0; // sensor distance
+            
+            vec2 front = p + normalize(v) * sensorDist;
+            vec2 left = p + rotate(normalize(v), -sensorAngle) * sensorDist;
+            vec2 right = p + rotate(normalize(v), sensorAngle) * sensorDist;
+            
+            // Sample trail values
+            float frontTrail = 0.0;
+            float leftTrail = 0.0;
+            float rightTrail = 0.0;
+            
+            // Sample front sensor
+            vec2 frontCoord = front * float(SW) / vec2(float(texSize.x), float(texSize.y));
+            if (frontCoord.x >= 0.0 && frontCoord.x < float(SW) && frontCoord.y >= 0.0 && frontCoord.y < float(SW)) {
+                int frontIndex = int(frontCoord.x) + int(frontCoord.y) * int(SW);
+                if (frontIndex >= 0 && frontIndex < int(SW * SW)) {
+                    frontTrail = trailGrid[frontIndex];
+                }
+            }
+            
+            // Sample left sensor
+            vec2 leftCoord = left * float(SW) / vec2(float(texSize.x), float(texSize.y));
+            if (leftCoord.x >= 0.0 && leftCoord.x < float(SW) && leftCoord.y >= 0.0 && leftCoord.y < float(SW)) {
+                int leftIndex = int(leftCoord.x) + int(leftCoord.y) * int(SW);
+                if (leftIndex >= 0 && leftIndex < int(SW * SW)) {
+                    leftTrail = trailGrid[leftIndex];
+                }
+            }
+            
+            // Sample right sensor
+            vec2 rightCoord = right * float(SW) / vec2(float(texSize.x), float(texSize.y));
+            if (rightCoord.x >= 0.0 && rightCoord.x < float(SW) && rightCoord.y >= 0.0 && rightCoord.y < float(SW)) {
+                int rightIndex = int(rightCoord.x) + int(rightCoord.y) * int(SW);
+                if (rightIndex >= 0 && rightIndex < int(SW * SW)) {
+                    rightTrail = trailGrid[rightIndex];
+                }
+            }
+            
+            // Steering logic
+            float turnAngle = 0.0;
+            if (frontTrail > leftTrail && frontTrail > rightTrail) {
+                // Continue forward
+            } else if (leftTrail > rightTrail) {
+                // Turn left
+                turnAngle = -sensorAngle * 0.3;
+            } else if (rightTrail > leftTrail) {
+                // Turn right
+                turnAngle = sensorAngle * 0.3;
+            } else {
+                // Random turn when no clear direction
+                float randomSeed = float(agentId) * time * 0.001;
+                turnAngle = (r(randomSeed) - 0.5) * 0.5;
+            }
+            
+            // Apply steering
+            if (abs(turnAngle) > 0.01) {
+                v = rotate(v, turnAngle);
+                velocities[agentId] = v;
+            }
+            
+            // Move agent
+            p += v;
+            
+            // Wrap around screen edges
+            if (p.x >= float(texSize.x)) p.x = 0.0;
+            if (p.x < 0.0) p.x = float(texSize.x) - 1.0;
+            if (p.y >= float(texSize.y)) p.y = 0.0;
+            if (p.y < 0.0) p.y = float(texSize.y) - 1.0;
+            
+            positions[agentId] = p;
+            
+            // Deposit trail at agent position - fix coordinate mapping
+            vec2 agentTrailCoord = p * float(SW) / vec2(float(texSize.x), float(texSize.y));
+            if (agentTrailCoord.x >= 1.0 && agentTrailCoord.x < float(SW) - 1.0 && 
+                agentTrailCoord.y >= 1.0 && agentTrailCoord.y < float(SW) - 1.0) {
+                int trailIndex = int(agentTrailCoord.x) + int(agentTrailCoord.y) * int(SW);
+                if (trailIndex >= 0 && trailIndex < int(SW * SW)) {
+                    trailGrid[trailIndex] += 0.05; // Reduced deposit amount
+                }
+            }
+        }
+    }
+    
+    // Trail diffusion (blur and fade) - simplified
+    if (gl_GlobalInvocationID.x > 0u && gl_GlobalInvocationID.x < uint(SW) - 1u && 
+        gl_GlobalInvocationID.y > 0u && gl_GlobalInvocationID.y < uint(SW) - 1u) {
+        
+        int centerIndex = int(gl_GlobalInvocationID.x) + int(gl_GlobalInvocationID.y) * int(SW);
+        
+        if (centerIndex >= 0 && centerIndex < int(SW * SW)) {
+            float current = trailGrid[centerIndex];
+            
+            // Simple 3x3 blur
+            float sum = current * 0.4;
+            sum += trailGrid[centerIndex - 1] * 0.1; // left
+            sum += trailGrid[centerIndex + 1] * 0.1; // right
+            sum += trailGrid[centerIndex - int(SW)] * 0.1; // up
+            sum += trailGrid[centerIndex + int(SW)] * 0.1; // down
+            sum += trailGrid[centerIndex - int(SW) - 1] * 0.05; // up-left
+            sum += trailGrid[centerIndex - int(SW) + 1] * 0.05; // up-right
+            sum += trailGrid[centerIndex + int(SW) - 1] * 0.05; // down-left
+            sum += trailGrid[centerIndex + int(SW) + 1] * 0.05; // down-right
+            
+            // Apply blur with decay
+            trailGrid[centerIndex] = sum * 0.995;
+        }
+    }
+    
+    // Skip diffusion for now
+
     if (gl_GlobalInvocationID.x < SW && gl_GlobalInvocationID.y < SH) { 
         current_index = ivec2(int(gl_GlobalInvocationID.x), int(gl_GlobalInvocationID.y));
 
@@ -357,8 +557,8 @@ void main() {
         // Update state
         float[12] xs = get_xy(uint(current_index.x), uint(current_index.y));    
         float[12] state = update(xs, ps);
-        vec4 scaled_back = imageLoad(backbuffer, texelCoord * 4); 
-        scaled_back = back;
+        vec4 scaled_back = imageLoad(backbuffer, texelCoord * int(FACTOR)); 
+        //scaled_back = back;
         for (uint s = 0u; s < N; s++) {
             //state[s] *= length(value) > 3? length(value) / (4. + float(s))  : (1. - length(centered) / 20.) - length(tex) / 1.  ;
             state[s] *= length(scaled_back);
@@ -374,7 +574,68 @@ void main() {
 
     // Output to screen
     float[12] states_out = get_xy(idxs, idys);
-    vec4 xrgb = vec4(states_out[0], states_out[1], states_out[2], states_out[3]) ;
+    vec4 xrgb = vec4(states_out[0], states_out[1], states_out[2], states_out[3]);
+    vec4 trailColor;
+    
+    // Trail visualization with agent positions
+    vec2 trailCoord = vec2(gl_GlobalInvocationID.xy) * float(SW) / vec2(float(screen_size.x), float(screen_size.y));
+    
+    if (trailCoord.x < float(SW) && trailCoord.y < float(SW)) {
+        int trailIndex = int(trailCoord.x) + int(trailCoord.y) * int(SW);
+        if (trailIndex >= 0 && trailIndex < int(SW * SW)) {
+            float trailValue = trailGrid[trailIndex];
+            trailColor = vec4(trailValue, trailValue * 0.1, trailValue * 0.2, 1.0); // Reddish trail
+        } else {
+            trailColor = vec4(0.0, 0.0, 0.0, 1.0); // Black for out of bounds
+        }
+    } else {
+        trailColor = vec4(0.0, 0.0, 0.0, 1.0); // Black outside trail grid
+    }
+    
+    // Visualize trails - fix coordinate mapping
+    vec2 screenCoord = vec2(gl_GlobalInvocationID.xy);
+    ivec2 texSize = imageSize(outputTexture);
+    vec2 visualTrailCoord = screenCoord * float(SW) / vec2(float(texSize.x), float(texSize.y));
+    
+    if (visualTrailCoord.x >= 0.0 && visualTrailCoord.x < float(SW) && 
+        visualTrailCoord.y >= 0.0 && visualTrailCoord.y < float(SW)) {
+        int trailIndex = int(visualTrailCoord.x) + int(visualTrailCoord.y) * int(SW);
+        if (trailIndex >= 0 && trailIndex < int(SW * SW)) {
+            float trailValue = trailGrid[trailIndex];
+            trailColor = vec4(trailValue * 1.0, trailValue * 0.3, trailValue * 0.5, 1.0); // Reduced intensity reddish trails
+        }
+    }
+    
+    // Show center marker as blue dot for reference
+    ivec2 texSize2 = imageSize(outputTexture);
+    vec2 centerPos = vec2(float(texSize2.x) / 2.0, float(texSize2.y) / 2.0);
+    float centerDist = distance(vec2(gl_GlobalInvocationID.xy), centerPos);
+    if (centerDist < 5.0) {
+        trailColor = vec4(1.0, 1.0, 1.0, 1.0); // center dot
+    }
+    
+    // Show first 10 agents as large red dots for debugging
+    for (uint i = 0u; i < 10u; i++) {
+        vec2 agentPos = positions[i];
+        float dist = distance(vec2(gl_GlobalInvocationID.xy), agentPos);
+        if (dist < 3.0) {
+            trailColor = vec4(1.0, 0.0, 0.0, 1.0); // Red agent dots
+        }
+    }
+    
+    // Show subset of other agents as small green dots
+    for (uint i = 10u; i < 40u; i++) { // Show agents 10-40
+        vec2 agentPos = positions[i];
+        if (length(agentPos) > 30.0) {
+            float dist = distance(vec2(gl_GlobalInvocationID.xy), agentPos);
+            if (dist < 0.8) {
+                trailColor = vec4(0.0, 1.0, 0.0, 1.0); // Green agent dots
+            }
+        }
+    }
+    
+    // Remove debug animations since simulation is working
+    
 
     //xrgb *=  (length(xrgb) * .5 - pow(length(centered), 2.) ); 
     // xrgb *= length(value) > 3.9 ? length(value) : 0.  ;
@@ -406,7 +667,9 @@ void main() {
         dial += cc;
     }
 
-    xrgb *= dial.xxxx;
+    // Disable dial overlay to see agents clearly
+    xrgb += dial.xxxx;
+    xrgb = trailColor;
 
     imageStore(outputTexture, fragCoord, xrgb);
 }
