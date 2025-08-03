@@ -81,8 +81,8 @@ const int[48][12] W = int[48][12](
 );
 
 // Simulation size
-uint SW = imageSize(outputTexture).x;
-uint SH = imageSize(outputTexture).y;
+uint SW = imageSize(outputTexture).x / 2;
+uint SH = imageSize(outputTexture).y / 2;
 
 // Global variable for current index
 ivec2 current_index;
@@ -280,18 +280,18 @@ void main() {
     angle = (angle + 3.14159) / (2.0 * 3.14159);
     angle = 1. - angle;
     angle = angle + .75;
-    angle = fract(angle);
+    angle = fract(angle); // loop at midnight
 
-    vec2 polar = vec2(1. - radius, angle);
+    vec2 polar = vec2(radius, angle) ;
 
     // Sample camera input
     vec4 cameraColor = imageLoad(camTexture, texelCoord);
 
     // Get audio data - map angle to musical scale bins for circular spectrogram
-    float MUSICAL_BINS = 88.0 * 3.; // Fixed number of musical scale bins
+    float MUSICAL_BINS = 88.0 * 4.; // Fixed number of musical scale bins
     //int audioIndex = int((1.-radius) * MUSICAL_BINS);
     // SPECTRAL
-    int audioIndex = int(( 1. -radius / 1.) * MUSICAL_BINS);
+    int audioIndex = int(( 1. - radius / 1.) * MUSICAL_BINS);
     audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS)-1);
     
     int SPECTRUM_SHIFT = 0;
@@ -309,7 +309,7 @@ void main() {
     
     
     //vec4 back = imageLoad(backbuffer, texelCoord + ivec2(1, 0));
-    vec4 back = imageLoad(backbuffer, texelCoord);
+    vec4 back = imageLoad(backbuffer, texelCoord); 
     //vec4 back = sampleBilinear(backbuffer, rotatedUV);
     //back *= angle < .9 ? 1.: 1. - angle;
     //back *= angle < 1. ? 1.: 1. - angle;
@@ -357,9 +357,10 @@ void main() {
         // Update state
         float[12] xs = get_xy(uint(current_index.x), uint(current_index.y));    
         float[12] state = update(xs, ps);
+        vec4 scaled_back = imageLoad(backbuffer, texelCoord * 2); 
         for (uint s = 0u; s < N; s++) {
             //state[s] *= length(value) > 3? length(value) / (4. + float(s))  : (1. - length(centered) / 20.) - length(tex) / 1.  ;
-            state[s] *= length(back);
+            state[s] *= length(scaled_back);
             }
 
 
@@ -374,7 +375,7 @@ void main() {
     float[12] states_out = get_xy(idxs, idys);
     vec4 xrgb = vec4(states_out[0], states_out[1], states_out[2], states_out[3]) ;
 
-    xrgb *=  (length(xrgb) * .5 - pow(length(centered), 2.) ); 
+    //xrgb *=  (length(xrgb) * .5 - pow(length(centered), 2.) ); 
     // xrgb *= length(value) > 3.9 ? length(value) : 0.  ;
     //xrgb = vec4(finalColor, 1.);
 
@@ -394,12 +395,14 @@ void main() {
 
 
 
-    float dial = step(circle(ratio, .85), .0);
+    float dial = step(circle(ratio, .75), .0);
     int nc = 16;
     float shift = .2;
     float sr = .12;
     for (int i=0; i<=nc; i++) {
-        dial += step(circle(ratio + vec2(sin(shift + i/float(nc) * 2.*acos(-1.)), cos(shift + i/float(nc) * 2*acos(-1.))), sr), .0);
+        float cc = step(circle(ratio + .9 * vec2(sin(shift + i/float(nc) * 2.*acos(-1.)), cos(shift + i/float(nc) * 2*acos(-1.))), sr), .0);
+        cc += cc * spectrum.x * 100.;
+        dial += cc;
     }
 
     xrgb *= dial.xxxx;
