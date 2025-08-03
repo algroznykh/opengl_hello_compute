@@ -23,9 +23,10 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
 
 void renderQuad();
 
-const unsigned int SCR_WIDTH = 2560;
-const unsigned int SCR_HEIGHT = 1600;
-const unsigned int TEXTURE_WIDTH = SCR_WIDTH / 2, TEXTURE_HEIGHT = SCR_HEIGHT / 2;
+// Screen resolution will be set dynamically
+unsigned int SCR_WIDTH;
+unsigned int SCR_HEIGHT;
+unsigned int TEXTURE_WIDTH, TEXTURE_HEIGHT;
 
 const unsigned int CAMERA_DEV = 2;
 
@@ -265,6 +266,14 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
+    // Get the primary monitor and its video mode to determine screen resolution
+    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+    SCR_WIDTH = mode->width;
+    SCR_HEIGHT = mode->height;
+    TEXTURE_WIDTH = SCR_WIDTH;
+    TEXTURE_HEIGHT = SCR_HEIGHT;
+
     GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "COMPUTE", NULL, NULL);
     if (window == NULL) {
         std::cout << "Failed to create GLFW window" << std::endl;
@@ -351,8 +360,8 @@ int main() {
     glBindImageTexture(3, backbufferTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
 
     // Create storage buffer for simulation states
-    const unsigned int SIM_WIDTH = SCR_WIDTH;
-    const unsigned int SIM_HEIGHT = SCR_HEIGHT;
+    const unsigned int SIM_WIDTH = SCR_WIDTH ;
+    const unsigned int SIM_HEIGHT = SCR_HEIGHT ;
     const unsigned int N_CHANNELS = 12;
     const size_t stateBufferSize = SIM_WIDTH * SIM_HEIGHT * N_CHANNELS * sizeof(float);
     

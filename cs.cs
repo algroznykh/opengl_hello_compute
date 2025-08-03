@@ -81,8 +81,8 @@ const int[48][12] W = int[48][12](
 );
 
 // Simulation size
-uint SW = imageSize(outputTexture).x / 2;
-uint SH = imageSize(outputTexture).y / 2;
+uint SW = imageSize(outputTexture).x / 1;
+uint SH = imageSize(outputTexture).y / 1;
 
 // Global variable for current index
 ivec2 current_index;
@@ -357,7 +357,8 @@ void main() {
         // Update state
         float[12] xs = get_xy(uint(current_index.x), uint(current_index.y));    
         float[12] state = update(xs, ps);
-        vec4 scaled_back = imageLoad(backbuffer, texelCoord * 2); 
+        vec4 scaled_back = imageLoad(backbuffer, texelCoord * 4); 
+        scaled_back = back;
         for (uint s = 0u; s < N; s++) {
             //state[s] *= length(value) > 3? length(value) / (4. + float(s))  : (1. - length(centered) / 20.) - length(tex) / 1.  ;
             state[s] *= length(scaled_back);
