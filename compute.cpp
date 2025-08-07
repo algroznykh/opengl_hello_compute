@@ -23,6 +23,8 @@ unsigned int stateBuffer, positionBuffer, velocityBuffer, trailGridBuffer, agent
 unsigned int uniformBuffer;
 bool texturesInitialized = false;
 
+unsigned int frameCounter;
+float currentFrame;
 void recreateTextures(int width, int height);
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
@@ -86,6 +88,11 @@ void recreateTextures(int width, int height) {
     // Clear angle buffer
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, angleBuffer);
     glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+
+    // Reset uniforms
+    currentFrame = 0.;
+    frameCounter = 0;
+
     
     std::cout << "Textures and buffers recreated for resolution: " << width << "x" << height << std::endl;
 }
@@ -515,9 +522,8 @@ int main() {
     
     // render loop
     int fCounter = 0;
-    unsigned int frameCounter = 0;
     while (!glfwWindowShouldClose(window)) {
-        float currentFrame = glfwGetTime();
+        currentFrame = glfwGetTime();
         deltaTime = currentFrame - lastFrame;
 
         // Cap FPS
@@ -565,6 +571,7 @@ int main() {
             
             currentComputeShader->use();
             currentComputeShader->setFloat("time", currentFrame);
+            currentComputeShader->setInt("frame", frameCounter);
             
             // Update uniform buffer with frame counter and time
             frameCounter++;

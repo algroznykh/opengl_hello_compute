@@ -10,12 +10,13 @@ layout(rgba32f, binding = 3) uniform image2D backbuffer;
 
 
 layout (location = 0) uniform float time;                 /** Time */
+layout (location = 1) uniform int frame;                
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
     mat3 kernel;
     uint filter_type;
-    uint frame;
+    uint uframe;
     uint agentCount;
 };
 
@@ -456,11 +457,14 @@ void main() {
         float[12] state = update(xs, ps);
         vec4 scaled_back = imageLoad(backbuffer, texelCoord * int(FACTOR)); 
         scaled_back = back;
-        
-        for (uint s = 0u; s < N; s++) {
-            //state[s] *= length(value) > 3? length(value) / (4. + float(s))  : (1. - length(centered) / 20.) - length(tex) / 1.  ;
-            state[s] *= length(scaled_back) > 1.? 1.05 : 0.;
 
+        if (frame < 100) {
+        return;
+        }
+       
+        // disturb states
+        for (uint s = 0u; s < N; s++) {
+            //state[s] *= length(scaled_back) > 1.? 1.05 : 0.;
             state[s] *= dial.x;
             }
 
