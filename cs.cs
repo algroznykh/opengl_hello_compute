@@ -106,7 +106,7 @@ const int[48][12] W = int[48][12](
 uint D=1; // dilation
 
 // Simulation size
-uint FACTOR = 3;
+uint FACTOR = 6;
 uint SW = imageSize(outputTexture).x / FACTOR;
 uint SH = imageSize(outputTexture).y / FACTOR;
 
@@ -249,6 +249,19 @@ vec4 camlap(ivec2 coord) {
         }
     }
     return res;
+}
+
+
+vec4 interp(ivec2 coord, int n) {
+    vec4 res = vec4(0.0);
+    for (int i = -n; i < n+1; i++) {
+        for (int j = -n; j < n+1; j++) {
+            ivec2 sampleCoord = coord + ivec2(i, j);
+            sampleCoord = clamp(sampleCoord, ivec2(0), imageSize(outputTexture) - 1);
+            res += imageLoad(outputTexture, sampleCoord) ;
+        }
+    }
+    return res/pow(n+2, 2.);
 }
 
 vec4 sampleBilinear(image2D img, vec2 uv) {
@@ -410,7 +423,7 @@ void main() {
         float cc = - circle(ratio + .9 * vec2(sin(shift + i/float(nc) * 2.*acos(-1.)), cos(shift + i/float(nc) * 2*acos(-1.))), sr);
         //cc += cc * spectrum.x * 100.;
         //dial += cc;
-        ccc += cc > 0. ? cc : 0. ;
+        ccc += cc > 0. ? cc * 4. : 0. ;
         //dial = step(dial, .1);
     }
     //dial = smin(dial, ccc, 0.2);
@@ -484,5 +497,10 @@ void main() {
 
 
     imageStore(outputTexture, fragCoord, xrgb);
+    // interpolation
+    vec4 interpolated = interp(fragCoord, 3);
+    imageStore(outputTexture, fragCoord, interpolated);
+
+
 }
  
