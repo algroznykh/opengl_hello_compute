@@ -106,7 +106,7 @@ const int[48][12] W = int[48][12](
 uint D=1; // dilation
 
 // Simulation size
-uint FACTOR = 6;
+uint FACTOR = 4;
 uint SW = imageSize(outputTexture).x / FACTOR;
 uint SH = imageSize(outputTexture).y / FACTOR;
 
@@ -376,7 +376,7 @@ void main() {
     // Use radius for intensity instead of x coordinate
     //float intensity = angle < 0.01 ? 1. : 0.;
     float intensity = abs(angle - fract(s)) < 0.01 ? 1. : 0.;
-    intensity *= 1. - radius;
+    //intensity *= 1. - radius;
     vec3 spectrum = color * intensity * 2.;
     vec3 finalColor ;
     
@@ -430,7 +430,7 @@ void main() {
     dial = dial + ccc;
     //dial = max(dial,ccc);
     //dial *= 10.;
-    dial = smoothstep(dial, -.01, .01);
+    dial = smoothstep(dial, -.05, .01);
     //dial = smoothstep(dial, -0.9, -.92);
 
     if (gl_GlobalInvocationID.x < SW  && gl_GlobalInvocationID.y < SH ) { 
@@ -456,9 +456,11 @@ void main() {
         float[12] state = update(xs, ps);
         vec4 scaled_back = imageLoad(backbuffer, texelCoord * int(FACTOR)); 
         scaled_back = back;
+        
         for (uint s = 0u; s < N; s++) {
             //state[s] *= length(value) > 3? length(value) / (4. + float(s))  : (1. - length(centered) / 20.) - length(tex) / 1.  ;
-            state[s] *= length(scaled_back);
+            state[s] *= length(scaled_back) > 1.? 1.05 : 0.;
+
             state[s] *= dial.x;
             }
 
@@ -498,7 +500,8 @@ void main() {
 
     imageStore(outputTexture, fragCoord, xrgb);
     // interpolation
-    vec4 interpolated = interp(fragCoord, 3);
+    vec4 interpolated = interp(fragCoord, int(FACTOR-1));
+    //interpolated.x = dial.x;
     imageStore(outputTexture, fragCoord, interpolated);
 
 
