@@ -103,8 +103,10 @@ const int[48][12] W = int[48][12](
     int[12](100,152,115,28,-229,26,-272,-200,528,-81,-102,235)
 );
 
+uint D=1; // dilation
+
 // Simulation size
-uint FACTOR = 1;
+uint FACTOR = 3;
 uint SW = imageSize(outputTexture).x / FACTOR;
 uint SH = imageSize(outputTexture).y / FACTOR;
 
@@ -145,21 +147,11 @@ void set_xy(uint x, uint y, float[12] cs) {
 }
 
 float R(int dx, int dy, uint c) {
-    uint x = (uint(current_index.x + dx) + SW) % SW;
-    uint y = (uint(current_index.y + dy) + SH) % SH;
+    uint x = (uint(current_index.x + dx*D) + SW) % SW;
+    uint y = (uint(current_index.y + dy*D) + SH) % SH;
     return get_xyc(x, y, c);
 }
 
-// Agent simulation functions
-float r(float n) {
-    float x = sin(n) * 43758.5453;
-    return fract(x);
-}
-
-int gridIndex(vec2 p) {
-    vec2 pos = mod(p, float(SW));
-    return int(pos.x) + int(pos.y) * int(SW);
-}
 
 vec2 rotate(vec2 vec, float angle) {
     float cs = cos(angle);
@@ -334,10 +326,10 @@ void main() {
     ivec2 fragCoord = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 imgSize = screen_size;
-    vec2 uv = vec2(texelCoord.xy) / vec2(imgSize);
+    vec2 uv = vec2(texelCoord.xy) / vec2(SW, SH);
     vec2 centered = uv - 0.5;
     centered *= 2.;
-    vec2 ratio = centered * vec2(float(screen_size.x)/float(screen_size.y), 1.);
+    vec2 ratio = centered * vec2(float(SW)/float(SH), 1.);
     centered = ratio;
 
     float radius = length(centered);
@@ -403,6 +395,7 @@ void main() {
     if (gl_GlobalInvocationID.x >= uint(screen_size.x) || gl_GlobalInvocationID.y >= uint(screen_size.y)) { 
         return; 
     }
+
     
     //float dial = step(circle(ratio, .75), .0);
     float dial =  .05 - circle(ratio, .75);
@@ -427,7 +420,7 @@ void main() {
     dial = smoothstep(dial, -.01, .01);
     //dial = smoothstep(dial, -0.9, -.92);
 
-    if (gl_GlobalInvocationID.x < SW && gl_GlobalInvocationID.y < SH) { 
+    if (gl_GlobalInvocationID.x < SW  && gl_GlobalInvocationID.y < SH ) { 
         current_index = ivec2(int(gl_GlobalInvocationID.x), int(gl_GlobalInvocationID.y));
 
         float[12] ps = float[12](
@@ -449,7 +442,7 @@ void main() {
         float[12] xs = get_xy(uint(current_index.x), uint(current_index.y));    
         float[12] state = update(xs, ps);
         vec4 scaled_back = imageLoad(backbuffer, texelCoord * int(FACTOR)); 
-        //scaled_back = back;
+        scaled_back = back;
         for (uint s = 0u; s < N; s++) {
             //state[s] *= length(value) > 3? length(value) / (4. + float(s))  : (1. - length(centered) / 20.) - length(tex) / 1.  ;
             state[s] *= length(scaled_back);
@@ -463,6 +456,8 @@ void main() {
     // Rescale buffer 
     uint idxs = uint(float(gl_GlobalInvocationID.x) / float(screen_size.x) * float(SW));
     uint idys = uint(float(gl_GlobalInvocationID.y) / float(screen_size.y) * float(SH));
+    //idxs = gl_GlobalInvocationID.x;
+    //idys = gl_GlobalInvocationID.y;
 
     // Output to screen
     float[12] states_out = get_xy(idxs, idys);
