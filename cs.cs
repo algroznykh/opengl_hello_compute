@@ -107,7 +107,7 @@ const int[48][12] W = int[48][12](
 uint D=1; // dilation
 
 // Simulation size
-uint FACTOR = 4;
+uint FACTOR = 3;
 uint SW = imageSize(outputTexture).x / FACTOR;
 uint SH = imageSize(outputTexture).y / FACTOR;
 
@@ -252,6 +252,23 @@ vec4 camlap(ivec2 coord) {
     return res;
 }
 
+vec4 bilinearInterp(vec2 coord) {
+    vec2 f = fract(coord);
+    ivec2 i = ivec2(floor(coord));
+    
+    // Clamp coordinates to texture bounds
+    ivec2 size = imageSize(outputTexture) - 1;
+    
+    vec4 tl = imageLoad(outputTexture, clamp(i, ivec2(0), size));
+    vec4 tr = imageLoad(outputTexture, clamp(i + ivec2(1, 0), ivec2(0), size));
+    vec4 bl = imageLoad(outputTexture, clamp(i + ivec2(0, 1), ivec2(0), size));
+    vec4 br = imageLoad(outputTexture, clamp(i + ivec2(1, 1), ivec2(0), size));
+    
+    vec4 top = mix(tl, tr, f.x);
+    vec4 bottom = mix(bl, br, f.x);
+    
+    return mix(top, bottom, f.y);
+}
 
 vec4 interp(ivec2 coord, int n) {
     vec4 res = vec4(0.0);
@@ -365,7 +382,7 @@ void main() {
     float MUSICAL_BINS = 88.0 * 4.; // Fixed number of musical scale bins
     //int audioIndex = int((1.-radius) * MUSICAL_BINS);
     // SPECTRAL
-    int audioIndex = int(( 1. - radius / 1.) * MUSICAL_BINS);
+    int audioIndex = int(( 1. - radius / 1. - .3) * MUSICAL_BINS);
     audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS)-1);
     
     int SPECTRUM_SHIFT = 0;
@@ -412,7 +429,7 @@ void main() {
 
     
     //float dial = step(circle(ratio, .75), .0);
-    float dial =  .05 - circle(ratio, .75);
+    float dial =  .05 - circle(ratio, .85);
     dial = dial > 0. ? dial : 0.;
     int nc = 16;
     float shift = .2;
@@ -464,10 +481,11 @@ void main() {
        
         // disturb states
         for (uint s = 0u; s < N; s++) {
-            //state[s] *= length(scaled_back) > 1.? 1.05 : 0.;
+            state[s] += length(scaled_back) > 3. ? state[s] * .1 : 0.;
+            state[s] *= (length(scaled_back) > 1.5) || (radius < .1) ? 1.0 : 0.6;
+            if (s > 2)
             state[s] *= dial.x;
             }
-
 
         set_xy(uint(current_index.x), uint(current_index.y), state);
     }
@@ -502,12 +520,15 @@ void main() {
     //xrgb = value;
 
 
+    xrgb.g *= .5555;
+    xrgb *= 10.;
+    //xrgb = pow(xrgb, vec4(3.));
     imageStore(outputTexture, fragCoord, xrgb);
     // interpolation
     vec4 interpolated = interp(fragCoord, int(FACTOR-1));
     //interpolated.x = dial.x;
+    //interpolated.x += back.x;
     imageStore(outputTexture, fragCoord, interpolated);
-
 
 }
  
