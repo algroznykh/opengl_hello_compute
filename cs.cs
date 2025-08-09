@@ -458,7 +458,7 @@ void main() {
         vec4 scaled_back = imageLoad(backbuffer, texelCoord * int(FACTOR)); 
         scaled_back = back;
 
-        if (frame < 100) {
+        if (frame == 0) {
         return;
         }
        

@@ -104,7 +104,7 @@ unsigned int SCR_WIDTH;
 unsigned int SCR_HEIGHT;
 unsigned int TEXTURE_WIDTH, TEXTURE_HEIGHT;
 
-const unsigned int CAMERA_DEV = 2;
+int CAMERA_DEV = -1;
 
 // timing
 float deltaTime = 0.0f;
@@ -264,6 +264,11 @@ void audioProcessingLoop() {
 }
 
 bool initCamera() {
+    if (CAMERA_DEV < 0) {
+        std::cout << "No camera device specified, using black texture" << std::endl;
+        return false; // Will use black texture as fallback
+    }
+    
     // Try different camera backends
     camera.open(CAMERA_DEV, cv::CAP_V4L2); // Try V4L2 first
     if (!camera.isOpened()) {
@@ -271,7 +276,7 @@ bool initCamera() {
     }
     
     if (!camera.isOpened()) {
-        std::cerr << "No camera available, using black texture" << std::endl;
+        std::cerr << "Camera device " << CAMERA_DEV << " not available, using black texture" << std::endl;
         return false; // Will use black texture as fallback
     }
     
@@ -332,7 +337,31 @@ void cleanupAudio() {
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    // Parse command line arguments
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--camera" || arg == "-c") {
+            if (i + 1 < argc) {
+                CAMERA_DEV = std::stoi(argv[i + 1]);
+                i++; // Skip the next argument since we've used it
+                std::cout << "Using camera device: " << CAMERA_DEV << std::endl;
+            } else {
+                std::cerr << "Error: --camera requires a device number" << std::endl;
+                return -1;
+            }
+        } else if (arg == "--help" || arg == "-h") {
+            std::cout << "Usage: " << argv[0] << " [OPTIONS]" << std::endl;
+            std::cout << "Options:" << std::endl;
+            std::cout << "  -c, --camera <device>   Use camera device number (default: no camera)" << std::endl;
+            std::cout << "  -h, --help             Show this help message" << std::endl;
+            return 0;
+        } else {
+            std::cerr << "Unknown argument: " << arg << std::endl;
+            std::cerr << "Use --help for usage information" << std::endl;
+            return -1;
+        }
+    }
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
