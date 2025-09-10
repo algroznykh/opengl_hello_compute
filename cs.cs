@@ -116,6 +116,25 @@ ivec2 current_index;
 
 // Helper functions
 
+ivec2 toPolar(vec2 fragCoord, vec2 center) {
+    // Vector from center to fragment
+    vec2 diff = fragCoord - center;
+
+    // Calculate radius (distance from center)
+    float radius = length(diff);
+
+    // Calculate angle in radians, then convert to degrees
+    float angleRad = atan(diff.y, diff.x);
+    float angleDeg = degrees(angleRad);
+
+    // Normalize angle to [0, 360) range
+    if (angleDeg < 0.0) {
+        angleDeg += 360.0;
+    }
+
+    return ivec2(int(radius), int(angleDeg));
+}
+
 float smin( float a, float b, float k )
 {
     k *= 2.0;
@@ -382,7 +401,7 @@ void main() {
     float MUSICAL_BINS = 88.0 * 4.; // Fixed number of musical scale bins
     //int audioIndex = int((1.-radius) * MUSICAL_BINS);
     // SPECTRAL
-    int audioIndex = int(( 1. - radius / 1. - .3) * MUSICAL_BINS);
+    int audioIndex = int(( 1. - radius / 1. - .3 ) * MUSICAL_BINS);
     audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS)-1);
     
     int SPECTRUM_SHIFT = 0;
@@ -459,14 +478,14 @@ void main() {
             lap(1u),// + value.g  - tex.y * radius * 5.,
             lap(2u),// + value.b  - tex.z * radius * 5.,
             lap(3u),// - tex.b * 2.,
-            sobx(4u),// - tex.r * 2.,
-            sobx(5u), 
-            sobx(6u), 
-            sobx(7u),
-            soby(8u),// - tex.b * 2.,
-            soby(9u),
-            soby(10u),
-            soby(11u)
+            soby(4u) * 1.,// - tex.r * 2.,
+            sobx(5u) * 1., 
+            sobx(6u) * 1., 
+            sobx(7u) * 1.,
+            soby(8u) * 1.,// - tex.b * 2.,
+            soby(9u) * 1.,
+            soby(10u)* 1.,
+            soby(11u)* 1.
         );
         
         // Update state
@@ -480,9 +499,11 @@ void main() {
         }
        
         // disturb states
-        for (uint s = 0u; s < N; s++) {
-            state[s] += length(scaled_back) > 3. ? state[s] * .1 : 0.;
+        for (uint s = 1u; s < N; s++) {
+            state[s] += length(scaled_back) > 2. ? state[s] * .15 : 0.;
             state[s] *= (length(scaled_back) > 1.5) || (radius < .1) ? 1.0 : 0.6;
+            if (radius < .09) 
+                state[s] =1.95;
             if (s > 2)
             state[s] *= dial.x;
             }
