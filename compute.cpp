@@ -67,14 +67,15 @@ void recreateTextures(int width, int height) {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBuffer);
     glBufferData(GL_SHADER_STORAGE_BUFFER, stateBufferSize, NULL, GL_DYNAMIC_DRAW);
     
-    // Recreate trail grid buffer (uses width as grid size)
-    const unsigned int GRID_SIZE = width;
+    // Recreate trail grid buffer (uses width x height grid size)
+    const unsigned int GRID_WIDTH = width;
+    const unsigned int GRID_HEIGHT = height;
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, trailGridBuffer);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_WIDTH * GRID_HEIGHT * sizeof(float), NULL, GL_DYNAMIC_DRAW);
     
     // Recreate agent grid buffer
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, agentGridBuffer);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * 4 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_WIDTH * GRID_HEIGHT * 4 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
     
     // Clear agent position buffer to force reinitialization at new resolution
     const unsigned int AGENT_COUNT = 10000;
@@ -472,7 +473,8 @@ int main(int argc, char* argv[]) {
     
     // Create agent simulation buffers
     const unsigned int AGENT_COUNT = 10000;
-    const unsigned int GRID_SIZE = SCR_WIDTH; // Use screen width as grid resolution
+    const unsigned int GRID_WIDTH = SCR_WIDTH;   // Use screen width for grid width
+    const unsigned int GRID_HEIGHT = SCR_HEIGHT; // Use screen height for grid height
     
     // Position buffer (vec2 per agent) - initialize with zeros, let shader handle initialization
     glGenBuffers(1, &positionBuffer);
@@ -489,13 +491,13 @@ int main(int argc, char* argv[]) {
     // Trail grid buffer (float per grid cell)
     glGenBuffers(1, &trailGridBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, trailGridBuffer);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_WIDTH * GRID_HEIGHT * sizeof(float), NULL, GL_DYNAMIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, trailGridBuffer);
     
     // Agent grid buffer (vec4 per grid cell)
     glGenBuffers(1, &agentGridBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, agentGridBuffer);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * 4 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_WIDTH * GRID_HEIGHT * 4 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, agentGridBuffer);
     
     // Angle buffer (float per agent)

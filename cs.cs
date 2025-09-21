@@ -10,14 +10,14 @@ layout(rgba32f, binding = 3) uniform image2D backbuffer;
 
 
 layout (location = 0) uniform float time;                 /** Time */
-layout (location = 1) uniform int frame;                
+layout (location = 1) uniform int frame;
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
     mat3 kernel;
     uint filter_type;
-    uint uframe;
-    uint agentCount;
+    //uint frame;
+    //uint agentCount;
 };
 
 
@@ -104,15 +104,7 @@ const int[48][12] W = int[48][12](
     int[12](100,152,115,28,-229,26,-272,-200,528,-81,-102,235)
 );
 
-uint D=1; // dilation
-
 // Simulation size
-uint FACTOR = 4;
-uint SW = imageSize(outputTexture).x / FACTOR;
-uint SH = imageSize(outputTexture).y / FACTOR;
-
-// Global variable for current index
-ivec2 current_index;
 
 // Helper functions
 
@@ -132,27 +124,17 @@ float sdPolarCircle(float r_pos, float theta_pos, float radius) {
     return sqrt(d_sq) - radius;
 }
 
-float[12] get_xy(uint x, uint y) {
-    uint i = x + y * SW;
-    return states[i];
+
+// Agent simulation functions
+float r(float n) {
+    float x = sin(n) * 43758.5453;
+    return fract(x);
 }
 
-float get_xyc(uint x, uint y, uint c) {
-    uint i = x + y * SW;
-    return states[i][c];
+int gridIndex(vec2 p) {
+    vec2 pos = p;
+    return int(pos.x) + int(pos.y);
 }
-
-void set_xy(uint x, uint y, float[12] cs) {
-    uint i = x + y * SW;
-    states[i] = cs;
-}
-
-float R(int dx, int dy, uint c) {
-    uint x = (uint(current_index.x + dx*D) + SW) % SW;
-    uint y = (uint(current_index.y + dy*D) + SH) % SH;
-    return get_xyc(x, y, c);
-}
-
 
 vec2 rotate(vec2 vec, float angle) {
     float cs = cos(angle);
@@ -161,6 +143,17 @@ vec2 rotate(vec2 vec, float angle) {
         vec.x * cs - vec.y * sn,
         vec.x * sn + vec.y * cs
     );
+}
+
+// Torus wrapping function
+vec2 torusWrap(vec2 pos, float size) {
+    return mod(pos + size, size);
+}
+
+// Torus-aware index calculation
+int torusIndex(vec2 pos, float size) {
+    vec2 wrapped = torusWrap(pos, size);
+    return int(wrapped.x) + int(wrapped.y) * int(size);
 }
 
 float triangle(vec2 pin, float r) {
@@ -183,62 +176,6 @@ float box(vec2 p, vec2 b) {
 mat2 rot(float q) {
     return mat2(cos(q), -sin(q), sin(q), cos(q));
 }
-
-float lap(uint c) {
-    return R(1,1,c) + R(1,-1,c) + R(-1,1,c) + R(-1,-1,c) 
-        + 2.0 * (R(0,1,c) + R(0,-1,c) + R(1,0,c) + R(-1,0,c)) - 12.0*R(0,0,c);
-}
-
-
-float sobx(uint c) {
-    // return R(-1, 1, c) + R(-1, 0, c)*2.0 + R(-1,-1, c)
-    //       -R( 1, 1, c) - R( 1, 0, c)*2.0 - R( 1,-1, c);
-    mat3 f = mat3(1, 2, 1, 
-                  0, 0, 0, 
-                  -1, -2, -1);
-
-    // f = rot(0) * f; 
-
-    float res = f[0][0] * R(-1, 1, c) + f[1][0] * R(-1, 0, c) + f[2][0] * R(-1,-1, c)
-              + f[0][1] * R(0, 1, c) + f[1][1] * R(0, 0, c) + f[2][1] * R(0, -1, c)   
-              + f[0][2] * R( 1, 1, c) + f[1][2] * R( 1, 0, c) + f[2][2] * R( 1,-1, c);
-    return res;
-}
-
-float soby(uint c) {
-    return R( 1, 1, c) + R( 0, 1, c)*2.0 + R(-1, 1, c)
-          -R( 1,-1, c) - R( 0,-1, c)*2.0 - R(-1,-1, c);
-}
-
-float[12] update(float[12] xs, float[12] ps) {
-    // Construct hidden state
-    float[48] hs;
-    for (uint i = 0u; i < N; i++) {
-        hs[i] = xs[i];
-        hs[i+N] = ps[i];
-        hs[i+N*2u] = abs(xs[i]);
-        hs[i+N*3u] = abs(ps[i]);
-    }
-
-    // Do 1x1 conv
-    float[12] y;
-    for (uint c = 0u; c < N; c++) {
-        float val = float(B[c]);
-
-        for (uint i = 0u; i < 48u; i++) {
-            val += hs[i] * float(W[i][c]);
-        }
-        y[c] = xs[c] + val / S;
-        y[c] = clamp(y[c], -1.5, 1.5);
-    }
-
-    if (abs(y[4]) < 0.01) {
-        return xs;
-    }
-
-    return y;
-}
-
 vec4 camlap(ivec2 coord) {
     mat3 lapmat = mat3(1, 2, 1, 2, -12, 2, 1, 2, 1);
     vec4 res = vec4(0.0);
@@ -250,19 +187,6 @@ vec4 camlap(ivec2 coord) {
         }
     }
     return res;
-}
-
-
-vec4 interp(ivec2 coord, int n) {
-    vec4 res = vec4(0.0);
-    for (int i = -n; i < n+1; i++) {
-        for (int j = -n; j < n+1; j++) {
-            ivec2 sampleCoord = coord + ivec2(i, j);
-            sampleCoord = clamp(sampleCoord, ivec2(0), imageSize(outputTexture) - 1);
-            res += imageLoad(outputTexture, sampleCoord) ;
-        }
-    }
-    return res/pow(n+2, 2.);
 }
 
 vec4 sampleBilinear(image2D img, vec2 uv) {
@@ -340,174 +264,190 @@ void main() {
     ivec2 fragCoord = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 imgSize = screen_size;
-    vec2 uv = vec2(texelCoord.xy) / vec2(SW, SH);
+    vec2 uv = vec2(texelCoord.xy) / vec2(imgSize);
     vec2 centered = uv - 0.5;
     centered *= 2.;
-    vec2 ratio = centered * vec2(float(SW)/float(SH), 1.);
+    vec2 ratio = centered * vec2(float(screen_size.x)/float(screen_size.y), 1.);
     centered = ratio;
 
-    float radius = length(centered);
-    float angle = atan(centered.y, centered.x);
-    float s = time / 2.5;
+    ivec2 texSize = imageSize(outputTexture);
+
+
+    float W = float(screen_size.x);
+    float H = float(screen_size.y);
     
-    // Normalize angle to [0, 1] range
-    angle = (angle + 3.14159) / (2.0 * 3.14159);
-    angle = 1. - angle;
-    angle = angle + .75;
-    angle = fract(angle); // loop at midnight
-
-    vec2 polar = vec2(radius, angle) ;
-
-    // Sample camera input
-    vec4 cameraColor = imageLoad(camTexture, texelCoord);
-
-    // Get audio data - map angle to musical scale bins for circular spectrogram
-    float MUSICAL_BINS = 88.0 * 4.; // Fixed number of musical scale bins
-    //int audioIndex = int((1.-radius) * MUSICAL_BINS);
-    // SPECTRAL
-    int audioIndex = int(( 1. - radius / 1.) * MUSICAL_BINS);
-    audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS)-1);
+    // Agent simulation - each thread handles one agent in parallel
+    uint agentId = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x;
     
-    int SPECTRUM_SHIFT = 0;
-    //audioIndex = int((1. - radius) * SH) * 8.;
-    float audioMagnitude = imageLoad(audioTexture, ivec2(audioIndex + SPECTRUM_SHIFT, 0)).r;
-    audioMagnitude = clamp(audioMagnitude * 200.0, 0.0, 1.0); // Amplify and clamp
-    
-    vec3 color = vec3(audioMagnitude);
-    // Use radius for intensity instead of x coordinate
-    //float intensity = angle < 0.01 ? 1. : 0.;
-    float intensity = abs(angle - fract(s)) < 0.01 ? 1. : 0.;
-    //intensity *= 1. - radius;
-    vec3 spectrum = color * intensity * 2.;
-    vec3 finalColor ;
-    
-    
-    //vec4 back = imageLoad(backbuffer, texelCoord + ivec2(1, 0));
-    vec4 back = imageLoad(backbuffer, texelCoord); 
-    //vec4 back = sampleBilinear(backbuffer, rotatedUV);
-    //back *= angle < .9 ? 1.: 1. - angle;
-    //back *= angle < 1. ? 1.: 1. - angle;
-    //back += angle + fract(time) < 1.? vec4(spectrum, 1.) : vec4(0.);
-    //back += vec4(spectrum, 1.);
-    back = max(back,vec4(spectrum,1.));
-
-    back *= .995;
-    //back += vec4(spectrum, 1.) * vec4(.99, .98, .97, 1.);
-    //back *= vec4(.9995, .99, .9995, 1.);
-    imageStore(backbuffer, texelCoord, back);
-
-    //finalColor +=1. *   sampleLoG(backbuffer, uv).rgb;
-    //finalColor *= .15 * sampleBilinear(backbuffer, uv).rgb;
-    finalColor += back.rgb;
-
-    //finalColor *= length(finalColor) > .5 ? 1. : 0.;
-    
-    vec4 value = vec4(finalColor, 1.0);
-    value *= 1. - radius;
-
-    vec4 tex = camlap(fragCoord);
-    if (gl_GlobalInvocationID.x >= uint(screen_size.x) || gl_GlobalInvocationID.y >= uint(screen_size.y)) { 
-        return; 
-    }
-
-    
-    //float dial = step(circle(ratio, .75), .0);
-    float dial =  .05 - circle(ratio, .75);
-    dial = dial > 0. ? dial : 0.;
-    int nc = 16;
-    float shift = .2;
-    float sr = .12;
-    float ccc;
-    for (int i=1; i<=nc; i++) {
-        //float cc = step(circle(ratio + .9 * vec2(sin(shift + i/float(nc) * 2.*acos(-1.)), cos(shift + i/float(nc) * 2*acos(-1.))), sr), .0);
-
-        float cc = - circle(ratio + .9 * vec2(sin(shift + i/float(nc) * 2.*acos(-1.)), cos(shift + i/float(nc) * 2*acos(-1.))), sr);
-        //cc += cc * spectrum.x * 100.;
-        //dial += cc;
-        ccc += cc > 0. ? cc * 4. : 0. ;
-        //dial = step(dial, .1);
-    }
-    //dial = smin(dial, ccc, 0.2);
-    dial = dial + ccc;
-    //dial = max(dial,ccc);
-    //dial *= 10.;
-    dial = smoothstep(dial, -.05, .01);
-    //dial = smoothstep(dial, -0.9, -.92);
-
-    if (gl_GlobalInvocationID.x < SW  && gl_GlobalInvocationID.y < SH ) { 
-        current_index = ivec2(int(gl_GlobalInvocationID.x), int(gl_GlobalInvocationID.y));
-
-        float[12] ps = float[12](
-            lap(0u),// + value.r * 2. - tex.x * radius * 5.,
-            lap(1u),// + value.g  - tex.y * radius * 5.,
-            lap(2u),// + value.b  - tex.z * radius * 5.,
-            lap(3u),// - tex.b * 2.,
-            sobx(4u),// - tex.r * 2.,
-            sobx(5u), 
-            sobx(6u), 
-            sobx(7u),
-            soby(8u),// - tex.b * 2.,
-            soby(9u),
-            soby(10u),
-            soby(11u)
-        );
+    uint agentCount = 30000000;
+    // Process agents in parallel
+    if (agentId < agentCount) {
+        vec2 p = positions[agentId];
+        vec2 v = velocities[agentId];
         
-        // Update state
-        float[12] xs = get_xy(uint(current_index.x), uint(current_index.y));    
-        float[12] state = update(xs, ps);
-        vec4 scaled_back = imageLoad(backbuffer, texelCoord * int(FACTOR)); 
-        scaled_back = back;
+        // Initialize/reset agents - force initialization for first 100 agents
+        if (length(p) < 1.0 || frame < 1) {  // Extended initialization period
+            float seed = float(agentId) / agentCount * 10000;  // Fixed denominator
+            vec2 center = vec2(W / 2.0, H / 2.0);
+            float angle = 3.1415 * 2.0 * r(seed);
+            p = center + min(W, H)/166.0 * vec2(cos(angle), sin(angle));  // Closer to center
+            //v = normalize(vec2(cos(angle), sin(angle))) * 1.0;    // Simpler velocity
+            v = normalize(p - center) * 600. * r(p.x);    
+            positions[agentId] = p;
+            velocities[agentId] = v;
+            angles[agentId] = angle;
+        } else {
+            // Move agent with torus wrapping
+            p += v;
+            p = vec2(mod(p.x, W), mod(p.y, H));
+            positions[agentId] = p;
 
-        if (frame == 0) {
-        return;
-        }
-       
-        // disturb states
-        for (uint s = 0u; s < N; s++) {
-            //state[s] *= length(scaled_back) > 1.? 1.05 : 0.;
-            state[s] *= dial.x;
+            // Deposit trail using torus-aware indexing
+            int pIndex = int(p.x) + int(p.y) * int(W);
+            if (pIndex >= 0 && pIndex < trailGrid.length()) {
+                trailGrid[pIndex] += 5.0; // Increased for visibility
             }
 
+            // Sensor parameters from WGSL
+            float x = 1.0 + 9.0 * (p.x / W);
+            float sa = acos(-1.0) *  box( 1 * sin((p/vec2(W, H) - 0.5) * 9.0), vec2(0.6, 0.4)) / 6.0;
+            float y = 1.0 + 9.0 * (p.y / H);
+            float so = 2.0 * acos(-1.0) * sin(box(sin((p/vec2(W, H) - 0.5) * 9.0), vec2(0.6, 0.4)) + 0.1);
 
-        set_xy(uint(current_index.x), uint(current_index.y), state);
+            // Front sensor with torus wrapping
+            vec2 fP = p + normalize(v) * so;
+            int fIndex = int(mod(fP.x, W)) + int(mod(fP.y, H)) * int(W);
+            float f = 0.0;
+            if (fIndex >= 0 && fIndex < trailGrid.length()) {
+                f = trailGrid[fIndex];
+                agentGrid[fIndex] = vec4(0.0, 1.0, 0.0, 1.0);
+            }
+
+            // Left sensor with torus wrapping
+            vec2 flP = p + rotate(normalize(v) * so, -sa);
+            int flIndex = int(mod(flP.x, W)) + int(mod(flP.y, H)) * int(W);
+            float fl = 0.0;
+            if (flIndex >= 0 && flIndex < trailGrid.length()) {
+                fl = trailGrid[flIndex];
+                agentGrid[flIndex] = vec4(1.0, 1.0, 0.0, 1.0);
+            }
+
+            // Right sensor with torus wrapping
+            vec2 frP = p + rotate(normalize(v) * so, sa);
+            int frIndex = int(mod(frP.x, W)) + int(mod(frP.y, H)) * int(W);
+            float fr = 0.0;
+            if (frIndex >= 0 && frIndex < trailGrid.length()) {
+                fr = trailGrid[frIndex];
+                agentGrid[frIndex] = vec4(0.0, 1.0, 1.0, 1.0);
+            }
+
+            // Steering logic from WGSL
+            if(f > fl && f > fr) {
+                // keep going forward
+            } else if(f < fl && f < fr) {
+                float seed = float(agentId) / float(agentCount) + time;
+                float angle = sa * (2.0 * round(r(seed)) - 1.0);
+                angles[agentId] += angle;
+                v = rotate(v, angle);
+            } else if(fl < fr) {
+                v = rotate(v, sa);
+                angles[agentId] += sa;
+            } else if(fr < fl) {
+                v = rotate(v, -sa);
+                angles[agentId] -= sa;
+            }
+
+            if (length(v) > 2.0) {
+                v = -normalize(v);
+            }
+            velocities[agentId] = v;
+        }
     }
 
-    // Rescale buffer 
-    uint idxs = uint(float(gl_GlobalInvocationID.x) / float(screen_size.x) * float(SW));
-    uint idys = uint(float(gl_GlobalInvocationID.y) / float(screen_size.y) * float(SH));
-    //idxs = gl_GlobalInvocationID.x;
-    //idys = gl_GlobalInvocationID.y;
+    // Synchronize all agent threads
+    barrier();
+    memoryBarrierBuffer();
 
-    // Output to screen
-    float[12] states_out = get_xy(idxs, idys);
-    vec4 xrgb = vec4(states_out[0], states_out[1], states_out[2], states_out[3]);
+    // Diffusion pass - each thread handles one pixel with torus topology
+    vec2 pixelPos = vec2(gl_GlobalInvocationID.xy);
+    if (pixelPos.x < W && pixelPos.y < H) {
+        
+        int i = int(pixelPos.x) + int(pixelPos.y) * int(W);
+        if (i >= 0 && i < trailGrid.length()) {
+            float current = trailGrid[i];
+            float sum = 0.0;
+            
+            // 3x3 convolution kernel with torus wrapping
+            sum += trailGrid[int(mod(pixelPos.x - 1.0 + W, W)) + int(mod(pixelPos.y - 1.0 + H, H)) * int(W)] * 0.05;
+            sum += trailGrid[int(mod(pixelPos.x, W)) + int(mod(pixelPos.y - 1.0 + H, H)) * int(W)] * 0.1;
+            sum += trailGrid[int(mod(pixelPos.x + 1.0, W)) + int(mod(pixelPos.y - 1.0 + H, H)) * int(W)] * 0.05;
+            sum += trailGrid[int(mod(pixelPos.x - 1.0 + W, W)) + int(mod(pixelPos.y, H)) * int(W)] * 0.1;
+            sum += current * 0.4;
+            sum += trailGrid[int(mod(pixelPos.x + 1.0, W)) + int(mod(pixelPos.y, H)) * int(W)] * 0.1;
+            sum += trailGrid[int(mod(pixelPos.x - 1.0 + W, W)) + int(mod(pixelPos.y + 1.0, H)) * int(W)] * 0.05;
+            sum += trailGrid[int(mod(pixelPos.x, W)) + int(mod(pixelPos.y + 1.0, H)) * int(W)] * 0.1;
+            sum += trailGrid[int(mod(pixelPos.x + 1.0, W)) + int(mod(pixelPos.y + 1.0, H)) * int(W)] * 0.05;
+            
+            // Synchronize before writing back
+            barrier();
+            memoryBarrierBuffer();
+            
+            trailGrid[i] = sum * 0.1;
+        }
+    }
+
+    // Final barrier before rendering
+    barrier();
+    memoryBarrierBuffer();
+    
     
 
-    //xrgb *=  (length(xrgb) * .5 - pow(length(centered), 2.) ); 
-    // xrgb *= length(value) > 3.9 ? length(value) : 0.  ;
-    //xrgb = vec4(finalColor, 1.);
+    // Render trail grid to output texture - each thread renders one pixel
+    vec4 color = vec4(0.0, 0.0, 0.0, 1.0);
+    
+    // Debug: Show agents as bright dots
+    for (uint i = 0u; i < min(agentCount, 100u); i++) {
+        vec2 agentPos = positions[i];
+        float dist = distance(vec2(gl_GlobalInvocationID.xy), agentPos);
+        if (dist < 2.0) {
+            color = vec4(1.0, 0.0, 0.0, 1.0); // Red agent dots
+        }
+    }
+    
+    if (gl_GlobalInvocationID.x < uint(W) && gl_GlobalInvocationID.y < uint(H)) {
+        int trailIndex = int(gl_GlobalInvocationID.x) + int(gl_GlobalInvocationID.y) * int(W);
+        
+        if (trailIndex >= 0 && trailIndex < trailGrid.length()) {
+            float trailValue = trailGrid[trailIndex];
+            if (trailValue > 0.0) {
+                color = vec4(trailValue) ; // , trailValue * 0.1, trailValue * 0.2, 1.0);
+            }
+            
+            // Reset agent grid for next frame
+            agentGrid[trailIndex] = vec4(0.0);
+        }
+    }
+    
+    // Debug: Show center dot
+    // vec2 center = vec2(rez / 2.0);
+    // if (distance(vec2(gl_GlobalInvocationID.xy), center) < 3.0) {
+    //     color = vec4(0.0, 1.0, 0.0, 1.0); // Green center dot
+    // }
+    // 
+    // // Debug info in corner - show frame and agentCount
+    // if (gl_GlobalInvocationID.x < 100u && gl_GlobalInvocationID.y < 20u) {
+    //     float intensity = float(frame % 60) / 60.0; // Flashing based on frame
+    //     color = vec4(intensity, intensity, 1.0, 1.0); // Blue flashing corner
+    // }
+    // 
+    // // Debug: Show if any agent processing happened
+    // uint debugAgentId = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+    // if (debugAgentId < 100u && gl_GlobalInvocationID.x > 200u && gl_GlobalInvocationID.x < 250u && gl_GlobalInvocationID.y < 50u) {
+    //     color = vec4(1.0, 1.0, 0.0, 1.0); // Yellow bar if agent processing happened
+    // }
 
-    //xrgb -= (.8 - length(centered));
+    color += imageLoad(outputTexture, fragCoord) * vec4(.9, .5, .7, 1.);
 
-    //xrgb *= tex * .;//* pow((1. - length(centered)), 1.) * 12.;
-
-    //xrgb = 1. -  vec4(finalColor, 1.) / 4.;
-
-    //xrgb *= (tex * (1. - radius)) + value ;
-    //xrgb *= 1. - radius;
-
-    //xrgb *= max(tex, cameraColor);
-    //xrgb += spectrum.xxxx;
-    //xrgb.r = fract(angle - time);
-    //xrgb = value;
-
-
-    imageStore(outputTexture, fragCoord, xrgb);
-    // interpolation
-    vec4 interpolated = interp(fragCoord, int(FACTOR-1));
-    //interpolated.x = dial.x;
-    imageStore(outputTexture, fragCoord, interpolated);
-
-
+    imageStore(outputTexture, fragCoord, color);
 }
  
