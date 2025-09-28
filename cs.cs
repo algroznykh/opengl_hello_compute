@@ -297,9 +297,10 @@ void main() {
             velocities[agentId] = v;
             angles[agentId] = angle;
         } else {
-            // Move agent with torus wrapping
+            // Move agent with proper torus wrapping
             p += v;
-            p = vec2(mod(p.x, W), mod(p.y, H));
+            p.x = mod(p.x + W, W);  // Handle negative values properly
+            p.y = mod(p.y + H, H);  // Handle negative values properly
             positions[agentId] = p;
 
             // Deposit trail using torus-aware indexing
@@ -316,7 +317,7 @@ void main() {
 
             // Front sensor with torus wrapping
             vec2 fP = p + normalize(v) * so;
-            int fIndex = int(mod(fP.x, W)) + int(mod(fP.y, H)) * int(W);
+            int fIndex = int(mod(fP.x + W, W)) + int(mod(fP.y + H, H)) * int(W);
             float f = 0.0;
             if (fIndex >= 0 && fIndex < trailGrid.length()) {
                 f = trailGrid[fIndex];
@@ -325,7 +326,7 @@ void main() {
 
             // Left sensor with torus wrapping
             vec2 flP = p + rotate(normalize(v) * so, -sa);
-            int flIndex = int(mod(flP.x, W)) + int(mod(flP.y, H)) * int(W);
+            int flIndex = int(mod(flP.x + W, W)) + int(mod(flP.y + H, H)) * int(W);
             float fl = 0.0;
             if (flIndex >= 0 && flIndex < trailGrid.length()) {
                 fl = trailGrid[flIndex];
@@ -334,7 +335,7 @@ void main() {
 
             // Right sensor with torus wrapping
             vec2 frP = p + rotate(normalize(v) * so, sa);
-            int frIndex = int(mod(frP.x, W)) + int(mod(frP.y, H)) * int(W);
+            int frIndex = int(mod(frP.x + W, W)) + int(mod(frP.y + H, H)) * int(W);
             float fr = 0.0;
             if (frIndex >= 0 && frIndex < trailGrid.length()) {
                 fr = trailGrid[frIndex];
@@ -379,20 +380,29 @@ void main() {
             
             // 3x3 convolution kernel with torus wrapping
             sum += trailGrid[int(mod(pixelPos.x - 1.0 + W, W)) + int(mod(pixelPos.y - 1.0 + H, H)) * int(W)] * 0.05;
-            sum += trailGrid[int(mod(pixelPos.x, W)) + int(mod(pixelPos.y - 1.0 + H, H)) * int(W)] * 0.1;
-            sum += trailGrid[int(mod(pixelPos.x + 1.0, W)) + int(mod(pixelPos.y - 1.0 + H, H)) * int(W)] * 0.05;
-            sum += trailGrid[int(mod(pixelPos.x - 1.0 + W, W)) + int(mod(pixelPos.y, H)) * int(W)] * 0.1;
+            sum += trailGrid[int(mod(pixelPos.x + W, W)) + int(mod(pixelPos.y - 1.0 + H, H)) * int(W)] * 0.1;
+            sum += trailGrid[int(mod(pixelPos.x + 1.0 + W, W)) + int(mod(pixelPos.y - 1.0 + H, H)) * int(W)] * 0.05;
+            sum += trailGrid[int(mod(pixelPos.x - 1.0 + W, W)) + int(mod(pixelPos.y + H, H)) * int(W)] * 0.1;
             sum += current * 0.4;
-            sum += trailGrid[int(mod(pixelPos.x + 1.0, W)) + int(mod(pixelPos.y, H)) * int(W)] * 0.1;
-            sum += trailGrid[int(mod(pixelPos.x - 1.0 + W, W)) + int(mod(pixelPos.y + 1.0, H)) * int(W)] * 0.05;
-            sum += trailGrid[int(mod(pixelPos.x, W)) + int(mod(pixelPos.y + 1.0, H)) * int(W)] * 0.1;
-            sum += trailGrid[int(mod(pixelPos.x + 1.0, W)) + int(mod(pixelPos.y + 1.0, H)) * int(W)] * 0.05;
+            sum += trailGrid[int(mod(pixelPos.x + 1.0 + W, W)) + int(mod(pixelPos.y + H, H)) * int(W)] * 0.1;
+            sum += trailGrid[int(mod(pixelPos.x - 1.0 + W, W)) + int(mod(pixelPos.y + 1.0 + H, H)) * int(W)] * 0.05;
+            sum += trailGrid[int(mod(pixelPos.x + W, W)) + int(mod(pixelPos.y + 1.0 + H, H)) * int(W)] * 0.1;
+            sum += trailGrid[int(mod(pixelPos.x + 1.0 + W, W)) + int(mod(pixelPos.y + 1.0 + H, H)) * int(W)] * 0.05;
             
-            // Synchronize before writing back
-            barrier();
-            memoryBarrierBuffer();
-            
-            trailGrid[i] = sum * 0.1;
+            // Store diffused result in agentGrid.x as temporary buffer
+            agentGrid[i].x = sum * 0.9;  // Add slight decay
+        }
+    }
+    
+    // Synchronize all diffusion writes
+    barrier();
+    memoryBarrierBuffer();
+    
+    // Copy back from temporary buffer to trailGrid
+    if (pixelPos.x < W && pixelPos.y < H) {
+        int i = int(pixelPos.x) + int(pixelPos.y) * int(W);
+        if (i >= 0 && i < trailGrid.length()) {
+            trailGrid[i] = agentGrid[i].x;
         }
     }
 
@@ -446,7 +456,53 @@ void main() {
     //     color = vec4(1.0, 1.0, 0.0, 1.0); // Yellow bar if agent processing happened
     // }
 
-    color += imageLoad(outputTexture, fragCoord) * vec4(.9, .5, .7, 1.);
+    // Audio spectrum visualization - logarithmic histogram moving from top to bottom
+    const int MUSICAL_BINS = 352;
+    vec2 screenPos = vec2(gl_GlobalInvocationID.xy);
+    
+    // Create scrolling audio history visualization in the top portion of the screen
+    float historyHeight = H * 0.3;  // Use top 30% of screen for audio history
+    
+    if (screenPos.y < historyHeight) {
+        // Scroll the backbuffer down by 1 pixel each frame
+        if (screenPos.y > 0) {
+            vec4 prevColor = imageLoad(backbuffer, ivec2(screenPos.x, screenPos.y - 1));
+            imageStore(backbuffer, ivec2(screenPos.x, screenPos.y), prevColor * 0.95); // Fade over time
+        }
+        
+        // Add new audio data to the top row
+        if (screenPos.y == 0) {
+            // Map screen X position to frequency bin (logarithmic distribution)
+            float freqPos = screenPos.x / W;
+            int binIndex = int(freqPos * float(MUSICAL_BINS));
+            //binIndex = clamp(binIndex, 0, MUSICAL_BINS - 1);
+            
+            // Sample audio data
+            vec4 audioSample = imageLoad(audioTexture, ivec2(binIndex, 0));
+            float amplitude = audioSample.r;
+            
+            // Logarithmic scaling for better visualization
+            float logAmplitude = log(1.0 + amplitude * 10.0) / log(11.0);
+            
+            // Create color based on frequency and amplitude
+            vec3 spectrumColor = vec3(0.0);
+            float hue = freqPos * 6.28318; // Map frequency to hue
+            spectrumColor.r = sin(hue) * 0.5 + 0.5;
+            spectrumColor.g = sin(hue + 2.094) * 0.5 + 0.5;  // 2π/3
+            spectrumColor.b = sin(hue + 4.188) * 0.5 + 0.5;  // 4π/3
+            
+            // Set intensity based on amplitude
+            vec4 audioColor = vec4(spectrumColor * logAmplitude * 2.0, 1.0);
+            imageStore(backbuffer, ivec2(screenPos.x, 0), audioColor);
+        }
+        
+        // Display the audio history from backbuffer
+        vec4 historyColor = imageLoad(backbuffer, ivec2(screenPos.x, screenPos.y) + ivec2(0, -1));
+        color += historyColor * 0.;
+    }
+    
+    // Add the original physarum simulation with slight fade
+    color += imageLoad(outputTexture, fragCoord) * vec4(.4);
 
     imageStore(outputTexture, fragCoord, color);
 }

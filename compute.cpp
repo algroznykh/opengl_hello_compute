@@ -155,11 +155,11 @@ bool cameraRunning = true;
 
 // Shader hot reloading variables
 time_t lastShaderModTime = 0;
-const char* shaderPath = "cs.cs";
+std::string shaderPath = "cs.cs";
 
 bool hasShaderFileChanged() {
     struct stat fileStat;
-    if (stat(shaderPath, &fileStat) == 0) {
+    if (stat(shaderPath.c_str(), &fileStat) == 0) {
         if (fileStat.st_mtime != lastShaderModTime) {
             lastShaderModTime = fileStat.st_mtime;
             return true;
@@ -351,10 +351,20 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Error: --camera requires a device number" << std::endl;
                 return -1;
             }
+        } else if (arg == "--shader" || arg == "-s") {
+            if (i + 1 < argc) {
+                shaderPath = argv[i + 1];
+                i++; // Skip the next argument since we've used it
+                std::cout << "Using shader: " << shaderPath << std::endl;
+            } else {
+                std::cerr << "Error: --shader requires a shader file path" << std::endl;
+                return -1;
+            }
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [OPTIONS]" << std::endl;
             std::cout << "Options:" << std::endl;
             std::cout << "  -c, --camera <device>   Use camera device number (default: no camera)" << std::endl;
+            std::cout << "  -s, --shader <file>     Use specific shader file (default: cs.cs)" << std::endl;
             std::cout << "  -h, --help             Show this help message" << std::endl;
             return 0;
         } else {
@@ -581,7 +591,7 @@ int main(int argc, char* argv[]) {
                 if (currentComputeShader) {
                     std::cout << "Reloading compute shader..." << std::endl;
                     try {
-                        ComputeShader* newShader = new ComputeShader("cs.cs");
+                        ComputeShader* newShader = new ComputeShader(shaderPath.c_str());
                         // Only delete old shader if new one compiled successfully
                         delete currentComputeShader;
                         currentComputeShader = newShader;
@@ -595,7 +605,7 @@ int main(int argc, char* argv[]) {
                         // Keep using the old shader
                     }
                 } else {
-                    currentComputeShader = new ComputeShader("cs.cs");
+                    currentComputeShader = new ComputeShader(shaderPath.c_str());
                     std::cout << "Compute shader loaded successfully" << std::endl;
                 }
             }

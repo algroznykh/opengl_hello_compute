@@ -393,7 +393,15 @@ void main() {
             barrier();
             memoryBarrierBuffer();
             
-            trailGrid[i] = sum * 0.1;
+            vec2 sp = vec2(gl_GlobalInvocationID.xy);
+            float freqPos = sp.x / H;
+            //freqPos.x = 0.;
+            int bi = int(freqPos * float(420));
+            vec4 aaa = imageLoad(audioTexture, ivec2(bi, 0));
+            trailGrid[i] = sum  * .0 *  aaa.a * .3 ;
+            //trailGrid[i] += aaa.x * .01;
+            vec4 hist = imageLoad(backbuffer, ivec2(sp.x, sp.y) + ivec2(0, 0));
+            trailGrid[i] -= hist.x * .1;
         }
     }
 
@@ -452,7 +460,7 @@ void main() {
     vec2 screenPos = vec2(gl_GlobalInvocationID.xy);
     
     // Create scrolling audio history visualization in the top portion of the screen
-    float historyHeight = H * 0.3;  // Use top 30% of screen for audio history
+    float historyHeight = H;  // Use top 30% of screen for audio history
     
     if (screenPos.y < historyHeight) {
         // Scroll the backbuffer down by 1 pixel each frame
@@ -461,7 +469,7 @@ void main() {
             imageStore(backbuffer, ivec2(screenPos.x, screenPos.y), prevColor * 0.95); // Fade over time
         }
         
-        // Add new audio data to the top row
+        // Add new audio data to the t
         if (screenPos.y == 0) {
             // Map screen X position to frequency bin (logarithmic distribution)
             float freqPos = screenPos.x / W;
@@ -469,11 +477,11 @@ void main() {
             //binIndex = clamp(binIndex, 0, MUSICAL_BINS - 1);
             
             // Sample audio data
-            vec4 audioSample = imageLoad(audioTexture, ivec2(binIndex, 0));
+            vec4 audioSample = imageLoad(audioTexture, ivec2(binIndex / 2, 0));
             float amplitude = audioSample.r;
             
             // Logarithmic scaling for better visualization
-            float logAmplitude = log(1.0 + amplitude * 10.0) / log(11.0);
+            float logAmplitude = log(1.0 + amplitude * 60.0) / log(7.0);
             
             // Create color based on frequency and amplitude
             vec3 spectrumColor = vec3(0.0);
@@ -483,17 +491,17 @@ void main() {
             spectrumColor.b = sin(hue + 4.188) * 0.5 + 0.5;  // 4π/3
             
             // Set intensity based on amplitude
-            vec4 audioColor = vec4(spectrumColor * logAmplitude * 2.0, 1.0);
+            vec4 audioColor = vec4(spectrumColor * logAmplitude * 6.0, 1.0);
             imageStore(backbuffer, ivec2(screenPos.x, 0), audioColor);
         }
         
         // Display the audio history from backbuffer
-        vec4 historyColor = imageLoad(backbuffer, ivec2(screenPos.x, screenPos.y) + ivec2(0, -1));
-        color += historyColor * 0.;
+        vec4 historyColor = imageLoad(backbuffer, ivec2(screenPos.x, screenPos.y) + ivec2(0, 0));
+        color += historyColor.xxxx * .9;
     }
     
     // Add the original physarum simulation with slight fade
-    color += imageLoad(outputTexture, fragCoord) * vec4(.9);
+    color += imageLoad(outputTexture, fragCoord) * vec4(.99, .9, .95, 1.);
 
     imageStore(outputTexture, fragCoord, color);
 }
