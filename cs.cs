@@ -464,7 +464,7 @@ void main() {
         //dial = step(dial, .1);
     }
     //dial = smin(dial, ccc, 0.2);
-    dial = dial + ccc;
+    dial = dial;// + ccc;
     //dial = max(dial,ccc);
     //dial *= 10.;
     dial = smoothstep(dial, -.05, .01);
@@ -478,21 +478,21 @@ void main() {
             lap(1u),// + value.g  - tex.y * radius * 5.,
             lap(2u),// + value.b  - tex.z * radius * 5.,
             lap(3u),// - tex.b * 2.,
-            soby(4u) * 1.,// - tex.r * 2.,
-            sobx(5u) * 1., 
-            sobx(6u) * 1., 
-            sobx(7u) * 1.,
-            soby(8u) * 1.,// - tex.b * 2.,
-            soby(9u) * 1.,
-            soby(10u)* 1.,
-            soby(11u)* 1.
+            soby(4u) * .5 + sobx(4u) * .5,// - tex.r * 2.,
+            soby(5u) * .5 + sobx(5u) * .5, 
+            soby(6u) * .5 + sobx(6u) * .5, 
+            soby(7u) * .5 + sobx(7u) * .5,
+            sobx(8u) * .5 + soby(8u)  * .5,// - tex.b * 2.,
+            sobx(9u) * .5 + soby(9u)  * .5,
+            sobx(10u)* .5 + soby(10u) * .5,
+            sobx(11u)* .5 + soby(11u) * .5
         );
         
         // Update state
         float[12] xs = get_xy(uint(current_index.x), uint(current_index.y));    
         float[12] state = update(xs, ps);
         vec4 scaled_back = imageLoad(backbuffer, texelCoord * int(FACTOR)); 
-        scaled_back = back;
+        scaled_back = back ;
 
         if (frame == 0) {
         return;
@@ -500,12 +500,10 @@ void main() {
        
         // disturb states
         for (uint s = 1u; s < N; s++) {
-            state[s] += length(scaled_back) > 2. ? state[s] * .15 : 0.;
-            state[s] *= (length(scaled_back) > 1.5) || (radius < .1) ? 1.0 : 0.6;
-            if (radius < .09) 
-                state[s] =1.95;
-            if (s > 2)
-            state[s] *= dial.x;
+            //state[s] += length(scaled_back) > 1. ? state[s] * 1. : 0.;
+            state[s] += (length(scaled_back) > 3.) ? (1. - length(scaled_back)) *  .6: length(scaled_back)/5.9 ;
+            //if (s > 2)
+            //state[s] *= dial.x;
             }
 
         set_xy(uint(current_index.x), uint(current_index.y), state);
@@ -519,7 +517,7 @@ void main() {
 
     // Output to screen
     float[12] states_out = get_xy(idxs, idys);
-    vec4 xrgb = vec4(states_out[0], states_out[1], states_out[2], states_out[3]);
+    vec4 xrgb = vec4(states_out[3], states_out[0], states_out[3], states_out[3]);
     
 
     //xrgb *=  (length(xrgb) * .5 - pow(length(centered), 2.) ); 
@@ -542,7 +540,7 @@ void main() {
 
 
     xrgb.g *= .5555;
-    xrgb *= 10.;
+    xrgb *= .9;
     //xrgb = pow(xrgb, vec4(3.));
     imageStore(outputTexture, fragCoord, xrgb);
     // interpolation
