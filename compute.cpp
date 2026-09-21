@@ -98,6 +98,7 @@ struct NcaGpuGenome {
 
 class NcaGeneticEngine {
 public:
+    static const int TOTAL_PARAMS = 588; // 576 weights (48 x 12) + 12 biases
     NcaGpuGenome baseline;
     NcaGpuGenome candidate;
     std::vector<NcaGpuGenome> history;
@@ -107,7 +108,14 @@ public:
     bool dirty = false;
     std::mt19937 rng;
 
+    // Synaptic Wiring: parameters that were changed together in reinforced mutations wire together,
+    // making them significantly more likely to co-fire in subsequent mutations.
+    std::vector<int> lastMutatedIndices;
+    std::vector<float> wiringMatrix; // 588 x 588 symmetric association strengths
+    int wiringEvents = 0;            // Number of successful reinforcement events
+
     NcaGeneticEngine() : rng(1337) {
+        wiringMatrix.assign(TOTAL_PARAMS * TOTAL_PARAMS, 0.0f);
         resetToOriginal();
     }
 
@@ -125,11 +133,39 @@ public:
         generation = 0;
         hasCandidate = false;
         mutatedCount = 0;
+        lastMutatedIndices.clear();
         dirty = true;
+    }
+
+    void resetToRandom() {
+        // Sample random initialization on same scale as trained weights
+        std::normal_distribution<float> wDist(0.0f, 350.0f);
+        std::normal_distribution<float> bDist(0.0f, 350.0f);
+        for (int i = 0; i < 576; i++) {
+            baseline.W[i] = wDist(rng);
+        }
+        for (int c = 0; c < 12; c++) {
+            baseline.B[c] = bDist(rng);
+        }
+        candidate = baseline;
+        history.clear();
+        generation = 0;
+        hasCandidate = false;
+        mutatedCount = 0;
+        lastMutatedIndices.clear();
+        dirty = true;
+        std::cout << "[Genetic Engine] NCA weights and biases reset to random distribution" << std::endl;
+    }
+
+    void resetWiring() {
+        wiringMatrix.assign(TOTAL_PARAMS * TOTAL_PARAMS, 0.0f);
+        wiringEvents = 0;
+        std::cout << "[Genetic Engine] Synaptic wiring matrix reset to zero" << std::endl;
     }
 
     int mutate(const std::string& target, float scale, float rate) {
         candidate = baseline;
+        lastMutatedIndices.clear();
         std::uniform_real_distribution<float> probDist(0.0f, 1.0f);
         std::normal_distribution<float> normDist(0.0f, 1.0f);
 
@@ -138,12 +174,9 @@ public:
         float effRate = std::max(0.01f, std::min(1.0f, rate));
         bool isEverything = (target == "everything" || target == "all_100");
 
-        // Rows in W:
-        // 0..11: xs (state recurrence)
-        // 12..23: ps (spatial perception: Sobel / Lap)
-        // 24..35: abs(xs) (nonlinear state)
-        // 36..47: abs(ps) (nonlinear perception)
+        std::vector<bool> willMutate(TOTAL_PARAMS, false);
 
+        // 1. Initial selection based on target subsystem and base mutation rate
         for (int row = 0; row < 48; row++) {
             bool targetRow = false;
             if (isEverything || target == "all") {
@@ -160,11 +193,7 @@ public:
 
             for (int col = 0; col < 12; col++) {
                 if (isEverything || probDist(rng) < effRate) {
-                    int idx = row * 12 + col;
-                    float orig = candidate.W[idx];
-                    float delta = normDist(rng) * (std::abs(orig) * effScale + 40.0f * effScale);
-                    candidate.W[idx] += delta;
-                    count++;
+                    willMutate[row * 12 + col] = true;
                 }
             }
         }
@@ -172,12 +201,55 @@ public:
         if (isEverything || target == "all" || target == "biases" || target == "bias") {
             for (int c = 0; c < 12; c++) {
                 if (isEverything || probDist(rng) < effRate) {
-                    float orig = candidate.B[c];
-                    float delta = normDist(rng) * (std::abs(orig) * effScale + 40.0f * effScale);
-                    candidate.B[c] += delta;
-                    count++;
+                    willMutate[576 + c] = true;
                 }
             }
+        }
+
+        // 2. Synaptic wiring propagation: parameters wired to firing parameters fire together!
+        if (!isEverything && wiringEvents > 0) {
+            std::vector<int> initialFired;
+            initialFired.reserve(TOTAL_PARAMS);
+            for (int i = 0; i < TOTAL_PARAMS; i++) {
+                if (willMutate[i]) initialFired.push_back(i);
+            }
+
+            if (!initialFired.empty()) {
+                for (int j = 0; j < TOTAL_PARAMS; j++) {
+                    if (willMutate[j]) continue;
+
+                    float excitation = 0.0f;
+                    for (int firedIdx : initialFired) {
+                        excitation += wiringMatrix[firedIdx * TOTAL_PARAMS + j];
+                    }
+
+                    if (excitation > 0.001f) {
+                        // Hebbian co-firing probability: excitation exponentially increases fire probability
+                        float cofireProb = 1.0f - std::exp(-0.4f * excitation);
+                        if (probDist(rng) < cofireProb) {
+                            willMutate[j] = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Mutate all parameters that fired
+        for (int idx = 0; idx < TOTAL_PARAMS; idx++) {
+            if (!willMutate[idx]) continue;
+
+            if (idx < 576) {
+                float orig = candidate.W[idx];
+                float delta = normDist(rng) * (std::abs(orig) * effScale + 40.0f * effScale);
+                candidate.W[idx] += delta;
+            } else {
+                int c = idx - 576;
+                float orig = candidate.B[c];
+                float delta = normDist(rng) * (std::abs(orig) * effScale + 40.0f * effScale);
+                candidate.B[c] += delta;
+            }
+            lastMutatedIndices.push_back(idx);
+            count++;
         }
 
         mutatedCount = count;
@@ -191,6 +263,7 @@ public:
             candidate = baseline;
             hasCandidate = false;
             mutatedCount = 0;
+            lastMutatedIndices.clear();
             dirty = true;
         }
     }
@@ -203,8 +276,27 @@ public:
             }
             baseline = candidate;
             generation++;
+
+            // Wire together all parameters that changed in this successful candidate!
+            if (lastMutatedIndices.size() >= 2) {
+                float increment = 1.0f;
+                if (lastMutatedIndices.size() > 60) {
+                    increment = 60.0f / (float)lastMutatedIndices.size();
+                }
+                for (size_t a = 0; a < lastMutatedIndices.size(); a++) {
+                    int idxA = lastMutatedIndices[a];
+                    for (size_t b = a + 1; b < lastMutatedIndices.size(); b++) {
+                        int idxB = lastMutatedIndices[b];
+                        wiringMatrix[idxA * TOTAL_PARAMS + idxB] += increment;
+                        wiringMatrix[idxB * TOTAL_PARAMS + idxA] += increment;
+                    }
+                }
+                wiringEvents++;
+            }
+
             hasCandidate = false;
             mutatedCount = 0;
+            lastMutatedIndices.clear();
             dirty = true;
         }
     }
@@ -217,10 +309,31 @@ public:
             if (generation > 0) generation--;
             hasCandidate = false;
             mutatedCount = 0;
+            lastMutatedIndices.clear();
             dirty = true;
             return true;
         }
         return false;
+    }
+
+    int getActiveWiredLinks() const {
+        int links = 0;
+        for (int i = 0; i < TOTAL_PARAMS; i++) {
+            for (int j = i + 1; j < TOTAL_PARAMS; j++) {
+                if (wiringMatrix[i * TOTAL_PARAMS + j] > 0.01f) {
+                    links++;
+                }
+            }
+        }
+        return links;
+    }
+
+    float getMaxWiringStrength() const {
+        float maxS = 0.0f;
+        for (int i = 0; i < TOTAL_PARAMS * TOTAL_PARAMS; i++) {
+            if (wiringMatrix[i] > maxS) maxS = wiringMatrix[i];
+        }
+        return maxS;
     }
 
     const NcaGpuGenome& getActiveGenome() const {
@@ -349,6 +462,63 @@ void imprintTextMessage(const std::string& msg) {
 
     std::cout << "[Easter Egg] Giant imprint: \"" << cleanMsg << "\" (charScale=" << charScale 
               << ", lines=" << numLines << ")" << std::endl;
+}
+
+void resetSimulationState() {
+    if (TEXTURE_WIDTH == 0 || TEXTURE_HEIGHT == 0) return;
+
+    // 1. Clear backbuffer texture
+    std::vector<float> emptyBack(TEXTURE_WIDTH * TEXTURE_HEIGHT * 4, 0.0f);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, backbufferTexture);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, TEXTURE_WIDTH, TEXTURE_HEIGHT, GL_RGBA, GL_FLOAT, emptyBack.data());
+
+    // 2. Clear output texture
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, outputTexture);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, TEXTURE_WIDTH, TEXTURE_HEIGHT, GL_RGBA, GL_FLOAT, emptyBack.data());
+
+    // 3. Clear and re-seed NCA state buffer with alive center patch
+    const unsigned int N_CHANNELS = 12;
+    const size_t stateBufferSize = TEXTURE_WIDTH * TEXTURE_HEIGHT * N_CHANNELS * sizeof(float);
+    std::vector<float> initState(TEXTURE_WIDTH * TEXTURE_HEIGHT * N_CHANNELS, 0.0f);
+
+    int sw = TEXTURE_WIDTH / 3;
+    int sh = TEXTURE_HEIGHT / 3;
+    int cx = sw / 2;
+    int cy = sh / 2;
+    for (int y = std::max(0, cy - 10); y <= std::min(sh - 1, cy + 10); y++) {
+        for (int x = std::max(0, cx - 10); x <= std::min(sw - 1, cx + 10); x++) {
+            float dist = std::sqrt((float)((x - cx)*(x - cx) + (y - cy)*(y - cy)));
+            if (dist <= 10.0f) {
+                int idx = (y * sw + x) * N_CHANNELS;
+                float falloff = 1.0f - dist / 10.0f;
+                initState[idx + 0] = 0.5f * falloff;
+                initState[idx + 1] = 0.2f * falloff;
+                initState[idx + 2] = 0.3f * falloff;
+                initState[idx + 3] = 1.0f * falloff;
+                initState[idx + 4] = 0.25f * falloff;
+            }
+        }
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBuffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, stateBufferSize, initState.data());
+
+    // 4. Clear agent simulation buffers
+    const unsigned int AGENT_COUNT = 10000;
+    const unsigned int GRID_SIZE = TEXTURE_WIDTH;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, trailGridBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, agentGridBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * 4 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, positionBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * 2 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, velocityBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * 2 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, angleBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+
+    std::cout << "[Simulation] State completely reset with fresh center seed" << std::endl;
 }
 
 unsigned int frameCounter;
@@ -1160,6 +1330,11 @@ int main(int argc, char* argv[]) {
                 imprintTextMessage(pendingMsg);
             }
 
+            // Handle pending simulation state reset
+            if (g_radarConfig.resetStateRequested.exchange(false)) {
+                resetSimulationState();
+            }
+
             // Handle pending genetic algorithm actions
             RadarConfig::GeneticRequest genReq;
             if (g_radarConfig.popPendingGenetic(genReq)) {
@@ -1173,13 +1348,20 @@ int main(int argc, char* argv[]) {
                     g_geneticEngine.reinforce();
                 } else if (genReq.action == "rollback") {
                     g_geneticEngine.rollback();
-                } else if (genReq.action == "reset") {
+                } else if (genReq.action == "reset" || genReq.action == "reset_original") {
                     g_geneticEngine.resetToOriginal();
+                } else if (genReq.action == "reset_random" || genReq.action == "random") {
+                    g_geneticEngine.resetToRandom();
+                } else if (genReq.action == "reset_wiring") {
+                    g_geneticEngine.resetWiring();
                 }
             }
             g_radarConfig.ncaGeneration.store(g_geneticEngine.generation);
             g_radarConfig.ncaHasCandidate.store(g_geneticEngine.hasCandidate);
             g_radarConfig.ncaMutatedCount.store(g_geneticEngine.mutatedCount);
+            g_radarConfig.ncaWiringLinks.store(g_geneticEngine.getActiveWiredLinks());
+            g_radarConfig.ncaWiringEvents.store(g_geneticEngine.wiringEvents);
+            g_radarConfig.ncaMaxWiringStrength.store(g_geneticEngine.getMaxWiringStrength());
 
             if (g_geneticEngine.dirty) {
                 glBindBuffer(GL_SHADER_STORAGE_BUFFER, ncaWeightBuffer);
@@ -1195,6 +1377,7 @@ int main(int argc, char* argv[]) {
             currentComputeShader->setFloat("freq_min_hz", g_radarConfig.freqMinHz.load());
             currentComputeShader->setFloat("freq_max_hz", g_radarConfig.freqMaxHz.load());
             currentComputeShader->setInt("scale_type", g_radarConfig.scaleType.load());
+            currentComputeShader->setFloat("spectrogram_influence", g_radarConfig.spectrogramInfluence.load());
             currentComputeShader->setFloat("nca_perturb", g_radarConfig.ncaPerturb.load());
             currentComputeShader->setFloat("nca_seed", g_radarConfig.ncaSeed.load());
             currentComputeShader->setFloat("nca_step_scale", g_radarConfig.ncaStepScale.load());

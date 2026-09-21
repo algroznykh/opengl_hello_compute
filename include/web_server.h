@@ -63,12 +63,21 @@ struct RadarConfig {
     std::atomic<bool> ncaReversePole{false};
     std::atomic<bool> ncaReverseSpin{false};
 
+    // Spectrogram influence & scanning line visibility (0.0 = completely muted / beam hidden)
+    std::atomic<float> spectrogramInfluence{1.0f};
+    std::atomic<bool> resetStateRequested{false};
+
     // Human-Assisted Genetic Algorithm state
     std::atomic<int> ncaGeneration{0};
     std::atomic<bool> ncaHasCandidate{false};
     std::atomic<int> ncaMutatedCount{0};
     std::atomic<float> ncaMutationScale{0.15f};
     std::atomic<float> ncaMutationRate{0.25f};
+
+    // Neural Wiring linkage ("fires together, wires together")
+    std::atomic<int> ncaWiringLinks{0};
+    std::atomic<int> ncaWiringEvents{0};
+    std::atomic<float> ncaMaxWiringStrength{0.0f};
 
     // Action triggers for Genetic Algorithm
     std::atomic<bool> geneticActionPending{false};
@@ -179,11 +188,15 @@ struct RadarConfig {
         ss << "  \"nca_pole_azimuthal\": " << ncaPoleAzimuthal.load() << ",\n";
         ss << "  \"reverse_pole\": " << (ncaReversePole.load() ? "true" : "false") << ",\n";
         ss << "  \"reverse_spin\": " << (ncaReverseSpin.load() ? "true" : "false") << ",\n";
+        ss << "  \"spectrogram_influence\": " << spectrogramInfluence.load() << ",\n";
         ss << "  \"genetic_generation\": " << ncaGeneration.load() << ",\n";
         ss << "  \"genetic_has_candidate\": " << (ncaHasCandidate.load() ? "true" : "false") << ",\n";
         ss << "  \"genetic_mutated_count\": " << ncaMutatedCount.load() << ",\n";
         ss << "  \"genetic_mutation_scale\": " << ncaMutationScale.load() << ",\n";
         ss << "  \"genetic_mutation_rate\": " << ncaMutationRate.load() << ",\n";
+        ss << "  \"nca_wiring_links\": " << ncaWiringLinks.load() << ",\n";
+        ss << "  \"nca_wiring_events\": " << ncaWiringEvents.load() << ",\n";
+        ss << "  \"nca_max_wiring_strength\": " << ncaMaxWiringStrength.load() << ",\n";
         ss << "  \"fps\": " << currentFps.load() << ",\n";
         ss << "  \"frame\": " << frameCount.load() << "\n";
         ss << "}";
@@ -497,6 +510,48 @@ private:
             return;
         }
 
+        // Reset Simulation State endpoint
+        if (cleanPath == "/api/reset_state") {
+            if (method == "POST") {
+                m_config.resetStateRequested.store(true);
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            }
+            std::string resBody = "{\"status\":\"state_reset\"}";
+            std::ostringstream response;
+            response << "HTTP/1.1 200 OK\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << resBody.length() << "\r\n"
+                     << cors
+                     << "Connection: close\r\n\r\n"
+                     << resBody;
+            std::string resStr = response.str();
+            send(clientFd, resStr.c_str(), resStr.length(), 0);
+            return;
+        }
+
+        // Spectrogram influence endpoint
+        if (cleanPath == "/api/spectrogram") {
+            if (method == "POST") {
+                size_t bodyPos = request.find("\r\n\r\n");
+                std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
+                float val;
+                if (extractJsonFloat(body, "influence", val) || extractJsonFloat(body, "spectrogram_influence", val) || extractJsonFloat(body, "gain", val)) {
+                    m_config.spectrogramInfluence.store(std::max(0.0f, std::min(5.0f, val)));
+                }
+            }
+            std::string resBody = m_config.toJson();
+            std::ostringstream response;
+            response << "HTTP/1.1 200 OK\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << resBody.length() << "\r\n"
+                     << cors
+                     << "Connection: close\r\n\r\n"
+                     << resBody;
+            std::string resStr = response.str();
+            send(clientFd, resStr.c_str(), resStr.length(), 0);
+            return;
+        }
+
         // NCA Topology endpoint
         if (cleanPath == "/api/topology") {
             if (method == "POST") {
@@ -686,6 +741,13 @@ private:
                 }
                 m_config.requestGenetic(strVal, target, scale, rate);
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+
+            if (extractJsonFloat(body, "spectrogram_influence", val) || extractJsonFloat(body, "spectrogram_gain", val) || extractJsonFloat(body, "spectrogram_strength", val)) {
+                m_config.spectrogramInfluence.store(std::max(0.0f, std::min(5.0f, val)));
+            }
+            if ((extractJsonBool(body, "reset_state", boolVal) && boolVal) || (extractJsonString(body, "action", strVal) && strVal == "reset_state")) {
+                m_config.resetStateRequested.store(true);
             }
             if (extractJsonString(body, "imprint_message", strVal)) {
                 m_config.requestImprint(strVal);
@@ -953,6 +1015,42 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       </div>
     </div>
 
+    <!-- Spectrogram Influence & Scanning Beam Control -->
+    <div class="section">
+      <div class="section-head">
+        <span class="section-title">Spectrogram Influence</span>
+        <span id="specInfluenceVal" class="val">1.00</span>
+      </div>
+      <input type="range" id="specInfluenceSlider" min="0.00" max="2.00" step="0.05" value="1.00">
+      <div class="btn-row">
+        <button class="btn" id="specBtn0" onclick="setSpectrogramInfluence(0.0)" title="Spectrogram does not affect state; scanning beam hidden">0.0 (Hide Line)</button>
+        <button class="btn" id="specBtn50" onclick="setSpectrogramInfluence(0.5)">0.5 (Subtle)</button>
+        <button class="btn active" id="specBtn100" onclick="setSpectrogramInfluence(1.0)">1.0 (Default)</button>
+        <button class="btn" id="specBtn150" onclick="setSpectrogramInfluence(1.5)">1.5 (Strong)</button>
+      </div>
+      <div class="meta-row">
+        <span>Audio State Coupling:</span>
+        <span id="specInfluenceDesc">Active Scanning Beam</span>
+      </div>
+    </div>
+
+    <!-- Simulation State Reset -->
+    <div class="section">
+      <div class="section-head">
+        <span class="section-title">Simulation State</span>
+        <span id="stateResetFeedback" class="val" style="color:var(--accent-cyan); font-size:0.75rem;">Active</span>
+      </div>
+      <div class="btn-row">
+        <button class="toggle-btn" style="flex:1; border-color:#ff9900; color:#ffaa33;" onclick="resetSimulationStateBtn()" title="Clear canvas, backbuffer, and re-seed alive center patch">
+          🌀 Reset State
+        </button>
+      </div>
+      <div class="meta-row">
+        <span>State Reinitialization:</span>
+        <span>Clears Canvas &amp; Reseeds Center Core</span>
+      </div>
+    </div>
+
     <!-- NCA Topology: Cartesian vs Polar (Rotated Sobel Filters) with Reverse Pole options -->
     <div class="section">
       <div class="section-head">
@@ -1047,6 +1145,12 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         <span id="mutatedCountLabel" class="meta-row" style="margin:0;">Mutated: 0 weights</span>
       </div>
 
+      <!-- Synaptic Wiring Telemetry: parameters that were changed together wire together -->
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
+        <span style="font-size:0.75rem; color:var(--text-dim);">Neural Wiring:</span>
+        <span id="wiringBadge" class="meta-row" style="margin:0; color:var(--accent-cyan); font-weight:600;">0 links (0 wired)</span>
+      </div>
+
       <!-- Target subsystem selector -->
       <div style="display:flex; flex-direction:column; gap:3px;">
         <div class="meta-row"><span>Target Subsystem</span><span id="targetNameLabel">All (588)</span></div>
@@ -1075,12 +1179,14 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         <button class="toggle-btn" style="flex:1.2;" onclick="mutateCandidate()">🎲 Mutate</button>
         <button class="toggle-btn active" style="flex:1.6; border-color:#ffbb00; color:#ffcc33;" onclick="mutateEverything()" title="Mutate 100% of all weights and biases">💥 Mutate Everything</button>
         <button class="btn" id="cancelBtn" style="flex:0.8; border-color:#ff4466; color:#ff7788;" onclick="cancelCandidate()" title="Cancel candidate and revert to baseline">❌ Cancel</button>
-        <button class="btn" id="reinforceBtn" style="flex:1.0; border-color:var(--accent); color:var(--accent); font-weight:700;" onclick="reinforceCandidate()" title="Lock-in candidate as next generation">✨ Reinforce</button>
+        <button class="btn" id="reinforceBtn" style="flex:1.0; border-color:var(--accent); color:var(--accent); font-weight:700;" onclick="reinforceCandidate()" title="Lock-in candidate as next generation and wire changed parameters together">✨ Reinforce</button>
       </div>
 
       <div class="btn-row">
         <button class="btn" onclick="rollbackGeneration()" title="Rollback to previous generation">⏮ Rollback</button>
         <button class="btn" onclick="resetToGen0()" title="Reset to original starting NCA weights">↺ Reset Gen 0</button>
+        <button class="btn" onclick="resetToRandomWeights()" title="Reset weights and biases to random distribution">🎲 Reset Random</button>
+        <button class="btn" onclick="resetWiringMatrix()" title="Reset synaptic wiring association matrix">🧠 Reset Wiring</button>
       </div>
 
       <!-- NCA step scale -->
@@ -1127,6 +1233,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       detected_bpm: 120.0,
       auto_freq: false,
       auto_gain: 1.0,
+      spectrogram_influence: 1.0,
       nca_topology: 0.0,
       topology: "cartesian",
       nca_pole_radial: 1.0,
@@ -1139,6 +1246,8 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       genetic_mutated_count: 0,
       genetic_mutation_scale: 0.15,
       genetic_mutation_rate: 0.25,
+      nca_wiring_links: 0,
+      nca_wiring_events: 0,
       nca_perturb: 0.0,
       nca_seed: 0.0,
       waveform_mode: 0
@@ -1148,6 +1257,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 
     const connDot = document.getElementById('connDot');
     const speedSlider = document.getElementById('speedSlider');
+    const specInfluenceSlider = document.getElementById('specInfluenceSlider');
     const decaySlider = document.getElementById('decaySlider');
     const freqMinSlider = document.getElementById('freqMinSlider');
     const freqMaxSlider = document.getElementById('freqMaxSlider');
@@ -1158,6 +1268,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     const imprintInput = document.getElementById('imprintInput');
 
     const speedVal = document.getElementById('speedVal');
+    const specInfluenceVal = document.getElementById('specInfluenceVal');
     const decayVal = document.getElementById('decayVal');
     const freqRangeVal = document.getElementById('freqRangeVal');
     const minFreqVal = document.getElementById('minFreqVal');
@@ -1192,6 +1303,24 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       minFreqVal.innerText = Math.round(s.freq_min) + ' Hz';
       maxFreqVal.innerText = Math.round(s.freq_max) + ' Hz';
       freqRangeVal.innerText = Math.round(s.freq_min) + ' - ' + Math.round(s.freq_max) + ' Hz';
+
+      // Spectrogram influence & scanning line visibility
+      if (s.spectrogram_influence !== undefined) {
+        state.spectrogram_influence = s.spectrogram_influence;
+        const inf = Number(s.spectrogram_influence);
+        specInfluenceVal.innerText = inf.toFixed(2) + (inf <= 0.001 ? ' (Hidden / 0)' : '');
+        if (specInfluenceSlider && !specInfluenceSlider.matches(':active')) {
+          specInfluenceSlider.value = inf;
+        }
+        const desc = document.getElementById('specInfluenceDesc');
+        if (desc) {
+          desc.innerText = inf <= 0.001 ? 'Autonomous Evolution (Beam Hidden)' : ('Active Disturbance (' + Math.round(inf * 100) + '%)');
+        }
+        document.getElementById('specBtn0')?.classList.toggle('active', inf <= 0.001);
+        document.getElementById('specBtn50')?.classList.toggle('active', Math.abs(inf - 0.5) < 0.05);
+        document.getElementById('specBtn100')?.classList.toggle('active', Math.abs(inf - 1.0) < 0.05);
+        document.getElementById('specBtn150')?.classList.toggle('active', Math.abs(inf - 1.5) < 0.05);
+      }
 
       ncaStepVal.innerText = Number(s.nca_step_scale || 1.0).toFixed(2) + 'x';
 
@@ -1238,6 +1367,14 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       }
       mutatedCountLabel.innerText = 'Mutated: ' + (s.genetic_mutated_count || 0) + ' weights';
 
+      // Synaptic wiring stats ("fires together, wires together")
+      const wiringBadge = document.getElementById('wiringBadge');
+      if (wiringBadge) {
+        const links = s.nca_wiring_links !== undefined ? s.nca_wiring_links : (state.nca_wiring_links || 0);
+        const events = s.nca_wiring_events !== undefined ? s.nca_wiring_events : (state.nca_wiring_events || 0);
+        wiringBadge.innerText = `${links} links (${events} reinforced)`;
+      }
+
       if (!autoSpeedBtn.matches(':active') && s.auto_speed !== undefined) {
         autoSpeedBtn.classList.toggle('active', !!s.auto_speed);
       }
@@ -1267,6 +1404,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     function syncSliders() {
       speedSlider.value = state.scanning_speed;
       decaySlider.value = state.decay_time;
+      if (specInfluenceSlider) specInfluenceSlider.value = state.spectrogram_influence !== undefined ? state.spectrogram_influence : 1.0;
       freqMinSlider.value = state.freq_min;
       freqMaxSlider.value = state.freq_max;
       topologySlider.value = state.nca_topology;
@@ -1286,6 +1424,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         const payload = {
           scanning_speed: parseFloat(state.scanning_speed),
           decay_time: parseFloat(state.decay_time),
+          spectrogram_influence: parseFloat(state.spectrogram_influence !== undefined ? state.spectrogram_influence : 1.0),
           freq_min: parseFloat(state.freq_min),
           freq_max: parseFloat(state.freq_max),
           scale: state.scale,
@@ -1346,6 +1485,12 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       state.scanning_speed = parseFloat(speedSlider.value);
       state.auto_speed = false;
       autoSpeedBtn.classList.remove('active');
+      updateUI(state);
+      sendControls();
+    });
+
+    specInfluenceSlider.addEventListener('input', () => {
+      state.spectrogram_influence = parseFloat(specInfluenceSlider.value);
       updateUI(state);
       sendControls();
     });
@@ -1576,6 +1721,55 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           updateUI(state);
         }
       } catch (e) {}
+    }
+
+    async function resetToRandomWeights() {
+      try {
+        const res = await fetch('/api/genetic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reset_random' })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {}
+    }
+
+    async function resetWiringMatrix() {
+      try {
+        const res = await fetch('/api/genetic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reset_wiring' })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {}
+    }
+
+    async function resetSimulationStateBtn() {
+      try {
+        const feedback = document.getElementById('stateResetFeedback');
+        if (feedback) feedback.innerText = 'Resetting...';
+        const res = await fetch('/api/reset_state', { method: 'POST' });
+        if (res.ok) {
+          if (feedback) feedback.innerText = 'Clean Seed Reset!';
+          setTimeout(() => { if (feedback) feedback.innerText = 'Active'; }, 2200);
+        }
+      } catch (e) {}
+    }
+
+    function setSpectrogramInfluence(v) {
+      state.spectrogram_influence = v;
+      if (specInfluenceSlider) specInfluenceSlider.value = v;
+      updateUI(state);
+      sendControls();
     }
 
     // --- Giant Easter Egg Structure Imprint ---

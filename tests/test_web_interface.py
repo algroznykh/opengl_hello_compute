@@ -41,6 +41,11 @@ def main():
     assert "topoBtnPolar" in html, "HTML should contain polar topology button"
     assert "reversePoleBtn" in html, "HTML should contain reversePoleBtn"
     assert "reverseSpinBtn" in html, "HTML should contain reverseSpinBtn"
+    assert "specInfluenceSlider" in html, "HTML should contain specInfluenceSlider"
+    assert "resetSimulationStateBtn" in html, "HTML should contain resetSimulationStateBtn"
+    assert "resetToRandomWeights" in html, "HTML should contain resetToRandomWeights"
+    assert "resetWiringMatrix" in html, "HTML should contain resetWiringMatrix"
+    assert "wiringBadge" in html, "HTML should contain neural wiringBadge"
     assert "mutateCandidate" in html, "HTML should contain mutateCandidate button"
     assert "mutateEverything" in html, "HTML should contain mutateEverything button"
     assert "targetBtnEverything" in html, "HTML should contain targetBtnEverything"
@@ -49,7 +54,7 @@ def main():
     assert "triggerImprint" in html, "HTML should contain Easter egg triggerImprint"
     assert "imprintInput" in html, "HTML should contain arbitrary message input"
     assert "<canvas" not in html, "Canvas element should remain removed for minimal UI"
-    print("  -> Passed. Minimal HTML contains Topology with Reverse Pole, Mutate Everything, and Easter Egg Imprint.")
+    print("  -> Passed. Minimal HTML contains Spectrogram Influence, State Reset, Random Reset, Wiring, and Giant Imprint.")
 
     print("[2] Testing GET /api/status...")
     status_str, _ = get("/api/status")
@@ -60,6 +65,7 @@ def main():
     assert "auto_speed" in status
     assert "rhythm_division" in status
     assert "auto_freq" in status
+    assert "spectrogram_influence" in status, "Status should contain spectrogram_influence"
     assert "nca_topology" in status
     assert "topology" in status
     assert "nca_pole_radial" in status
@@ -69,9 +75,11 @@ def main():
     assert "genetic_generation" in status
     assert "genetic_has_candidate" in status
     assert "genetic_mutated_count" in status
+    assert "nca_wiring_links" in status, "Status should contain nca_wiring_links"
+    assert "nca_wiring_events" in status, "Status should contain nca_wiring_events"
     assert "genetic_mutation_scale" in status
     assert "genetic_mutation_rate" in status
-    print("  -> Passed. Status API returns all autotune, topology, pole reversal, and genetic fields.")
+    print("  -> Passed. Status API returns autotune, spectrogram influence, wiring, and genetic fields.")
 
     print("[3] Testing Frequency Scales (log, mel, linear)...")
     res = post_json("/api/controls", {"scale": "mel"})
@@ -202,7 +210,89 @@ def main():
     assert status["genetic_generation"] == 0, f"Expected rollback to Gen 0, got {status['genetic_generation']}"
     print("  -> Rollback verified; restored previous generation.")
 
-    print("\nALL CARTESIAN, REVERSE POLAR, MUTATE EVERYTHING & GIANT IMPRINT TESTS PASSED SUCCESSFULLY!")
+    print("[9] Testing Spectrogram Influence Controls (/api/spectrogram & /api/controls)...")
+    # Set to 0.0 (hides scanning line, state decoupled from audio)
+    res = post_json("/api/spectrogram", {"spectrogram_influence": 0.0})
+    assert abs(res["spectrogram_influence"] - 0.0) < 0.01, f"Expected 0.0, got {res['spectrogram_influence']}"
+    print("  -> Spectrogram influence set to 0.0 (scanning line hidden, autonomous state evolution).")
+
+    # Set via controls to 1.5
+    res = post_json("/api/controls", {"spectrogram_influence": 1.5})
+    assert abs(res["spectrogram_influence"] - 1.5) < 0.01, f"Expected 1.5, got {res['spectrogram_influence']}"
+    print(f"  -> Spectrogram influence set to {res['spectrogram_influence']} via /api/controls.")
+
+    # Reset back to default 1.0
+    res = post_json("/api/controls", {"spectrogram_influence": 1.0})
+    assert abs(res["spectrogram_influence"] - 1.0) < 0.01
+
+    print("[10] Testing Simulation State Reset (/api/reset_state)...")
+    res = post_json("/api/reset_state", {})
+    assert res.get("status") == "state_reset", f"Expected state_reset, got {res}"
+    print("  -> Simulation state reset requested via /api/reset_state.")
+
+    res = post_json("/api/controls", {"reset_state": True})
+    print("  -> Simulation state reset requested via /api/controls.")
+
+    print("[11] Testing Reset Weights to Random (/api/genetic action=reset_random)...")
+    res = post_json("/api/genetic", {"action": "reset_random"})
+    time.sleep(0.05)
+    status_str, _ = get("/api/status")
+    status = json.loads(status_str)
+    assert status["genetic_generation"] == 0
+    assert status["genetic_has_candidate"] is False
+    print("  -> Reset to random weights distribution verified.")
+
+    print("[12] Testing Synaptic Wiring ('Parameters that change together wire together')...")
+    # Reset wiring and baseline
+    post_json("/api/genetic", {"action": "reset"})
+    post_json("/api/genetic", {"action": "reset_wiring"})
+    time.sleep(0.05)
+    status = json.loads(get("/api/status")[0])
+    assert status["nca_wiring_links"] == 0, f"Expected 0 links, got {status['nca_wiring_links']}"
+    assert status["nca_wiring_events"] == 0
+
+    # Mutate perception subsystem
+    post_json("/api/genetic", {
+        "action": "mutate",
+        "target": "perception",
+        "scale": 0.25,
+        "rate": 0.35
+    })
+    time.sleep(0.05)
+    status = json.loads(get("/api/status")[0])
+    mutCount = status["genetic_mutated_count"]
+    assert status["genetic_has_candidate"] is True
+    assert mutCount > 1, f"Expected multiple mutated weights, got {mutCount}"
+    print(f"  -> Candidate generated with {mutCount} mutated parameters.")
+
+    # Reinforce candidate: these parameters must wire together!
+    post_json("/api/genetic", {"action": "reinforce"})
+    time.sleep(0.05)
+    status = json.loads(get("/api/status")[0])
+    links = status["nca_wiring_links"]
+    events = status["nca_wiring_events"]
+    assert links > 0, f"Expected active wiring links > 0, got {links}"
+    assert events == 1, f"Expected 1 wiring event, got {events}"
+    print(f"  -> Reinforcement successful! Wired {links} synaptic connections across changed parameters.")
+
+    # Mutate again: wired parameters co-fire together!
+    post_json("/api/genetic", {
+        "action": "mutate",
+        "target": "perception",
+        "scale": 0.20,
+        "rate": 0.20
+    })
+    time.sleep(0.05)
+    status = json.loads(get("/api/status")[0])
+    assert status["genetic_has_candidate"] is True
+    print(f"  -> Second mutation fired successfully with co-firing enabled: {status['genetic_mutated_count']} parameters.")
+    post_json("/api/genetic", {"action": "cancel"})
+
+    # Reset back to clean Gen 0 original
+    post_json("/api/genetic", {"action": "reset"})
+    print("  -> Clean baseline restored.")
+
+    print("\nALL SPECTROGRAM INFLUENCE, STATE RESET, RANDOM RESET & SYNAPTIC WIRING TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     main()

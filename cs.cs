@@ -22,6 +22,7 @@ uniform float nca_step_scale;
 uniform float nca_topology; // 0.0 = Cartesian, 1.0 = Polar (pole in center)
 uniform float nca_pole_radial;    // +1.0 = outward pole, -1.0 = reversed/inward pole
 uniform float nca_pole_azimuthal; // +1.0 = standard CCW spin, -1.0 = reversed CW spin
+uniform float spectrogram_influence; // Controls how much spectrogram affects NCA state & beam visibility (0.0 to 2.0)
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
@@ -408,8 +409,9 @@ void main() {
     // Shortest angular distance to beam on circle [0, 1] (eliminates glitch at 0/1 seam)
     float angleDiff = abs(angle - fract(s));
     angleDiff = min(angleDiff, 1.0 - angleDiff);
-    float intensity = angleDiff < 0.012 ? 1.0 : 0.0;
-    vec3 spectrum = color * intensity * 2.;
+    // When spectrogram_influence is 0, the scanning line is completely hidden
+    float intensity = (spectrogram_influence > 0.0001 && angleDiff < 0.012) ? 1.0 : 0.0;
+    vec3 spectrum = color * intensity * (2.0 * spectrogram_influence);
 
     // Active audio signal is the circular radar spectrogram
     vec3 activeAudioSignal = spectrum;
@@ -417,8 +419,10 @@ void main() {
     
     vec4 back = imageLoad(backbuffer, texelCoord); 
     // Only refresh backbuffer energy where audio signal is non-zero
-    float sigAlpha = clamp(length(activeAudioSignal) * 1.5, 0.0, 1.0);
-    back = max(back, vec4(activeAudioSignal, sigAlpha));
+    if (spectrogram_influence > 0.0001 && length(activeAudioSignal) > 0.001) {
+        float sigAlpha = clamp(length(activeAudioSignal) * 1.5, 0.0, 1.0);
+        back = max(back, vec4(activeAudioSignal, sigAlpha));
+    }
 
     // Radar decay persistence control (defaults to 0.995)
     float effectiveDecay = (decay_time > 0.0001) ? clamp(decay_time, 0.5, 0.9999) : 0.995;
@@ -486,17 +490,21 @@ void main() {
         return;
         }
        
-        // disturb states
+        // disturb states (scaled by spectrogram_influence; giant imprinted glyphs always disturb)
+        float audioDisturb = spectrogram_influence;
         for (uint s = 1u; s < N; s++) {
-            state[s] += (length(scaled_back) > 3.) ? (1. - length(scaled_back)) *  .6: length(scaled_back)/5.9 ;
+            float dist = (length(scaled_back) > 3.) ? (1. - length(scaled_back)) * .6 : (length(scaled_back) / 5.9 * audioDisturb);
+            state[s] += dist;
         }
 
-        // Auto-rejuvenate dormant/collapsed cells when radar or waveform energy passes over
+        // Auto-rejuvenate dormant/collapsed cells when radar energy or imprint passes over
         float stateEnergy = abs(state[0]) + abs(state[1]) + abs(state[2]) + abs(state[3]);
-        if (stateEnergy < 0.02 && length(scaled_back) > 0.08) {
-            state[0] = 0.35 * sin(float(current_index.x) * 0.12);
-            state[3] = 0.35 * cos(float(current_index.y) * 0.12);
-            state[4] = 0.15;
+        if (stateEnergy < 0.02) {
+            if (length(scaled_back) > 3.0 || (audioDisturb > 0.001 && length(scaled_back) > 0.08)) {
+                state[0] = 0.35 * sin(float(current_index.x) * 0.12);
+                state[3] = 0.35 * cos(float(current_index.y) * 0.12);
+                state[4] = 0.15;
+            }
         }
 
         set_xy(uint(current_index.x), uint(current_index.y), state);
@@ -539,7 +547,8 @@ void main() {
     // interpolation
     vec4 interpolated = interp(fragCoord, int(FACTOR-1));
     // Overlay direct luminous radar sweep and glowing backbuffer structures (imprinted messages)
-    interpolated.rgb += activeAudioSignal * 0.85 + back.rgb * 0.35;
+    vec3 overlayBack = (spectrogram_influence > 0.0001) ? (back.rgb * 0.35) : (length(back.rgb) > 1.5 ? (back.rgb * 0.35) : vec3(0.0));
+    interpolated.rgb += activeAudioSignal * 0.85 + overlayBack;
     imageStore(outputTexture, fragCoord, interpolated);
 }
  
