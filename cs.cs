@@ -17,6 +17,10 @@ uniform vec2 freq_range;
 uniform float freq_min_hz;
 uniform float freq_max_hz;
 uniform int scale_type;
+uniform float scan_phase;
+uniform float nca_perturb;
+uniform float nca_seed;
+uniform float nca_step_scale;
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
@@ -245,15 +249,30 @@ float[12] update(float[12] xs, float[12] ps) {
         hs[i+N*3u] = abs(ps[i]);
     }
 
-    // Do 1x1 conv
+    // Do 1x1 conv with optional weight perturbation
     float[12] y;
+    float effectiveStepScale = (nca_step_scale > 0.0) ? nca_step_scale : 1.0;
+    float perturbAmount = clamp(nca_perturb, 0.0, 2.0);
+    uint seedInt = uint(nca_seed * 65536.0);
+
     for (uint c = 0u; c < N; c++) {
         float val = float(B[c]);
 
-        for (uint i = 0u; i < 48u; i++) {
-            val += hs[i] * float(W[i][c]);
+        if (perturbAmount > 0.0001) {
+            for (uint i = 0u; i < 48u; i++) {
+                // Fast integer hash for weight perturbation (1 cycle, zero trig functions)
+                uint h = (i * 73856093u ^ c * 19349663u ^ seedInt);
+                h = (h ^ (h >> 13u)) * 1274126177u;
+                float noise = float(int(h & 0xFFFFu) - 32768) / 32768.0; // [-1.0, 1.0]
+                float w = float(W[i][c]) + perturbAmount * noise * 400.0;
+                val += hs[i] * w;
+            }
+        } else {
+            for (uint i = 0u; i < 48u; i++) {
+                val += hs[i] * float(W[i][c]);
+            }
         }
-        y[c] = xs[c] + val / S;
+        y[c] = xs[c] + (val / S) * effectiveStepScale;
         y[c] = clamp(y[c], -1.5, 1.5);
     }
 
@@ -391,9 +410,9 @@ void main() {
     float radius = length(centered);
     float angle = atan(centered.y, centered.x);
     
-    // Scanning speed control (defaults to 0.4 rev/s matching original time / 2.5)
+    // Scanning phase: continuously integrated on CPU so it never jumps backwards when speed changes
     float effectiveSpeed = (scan_speed > 0.0001) ? scan_speed : 0.4;
-    float s = time * effectiveSpeed;
+    float s = (scan_phase >= 0.0) ? scan_phase : fract(time * effectiveSpeed);
     
     // Normalize angle to [0, 1] range
     angle = (angle + 3.14159) / (2.0 * 3.14159);
@@ -424,10 +443,10 @@ void main() {
     audioMagnitude = clamp(audioMagnitude * 200.0, 0.0, 1.0); // Amplify and clamp
     
     vec3 color = vec3(audioMagnitude);
-    // Use radius for intensity instead of x coordinate
-    //float intensity = angle < 0.01 ? 1. : 0.;
-    float intensity = abs(angle - fract(s)) < 0.01 ? 1. : 0.;
-    //intensity *= 1. - radius;
+    // Shortest angular distance to beam on circle [0, 1] (eliminates glitch at 0/1 seam)
+    float angleDiff = abs(angle - fract(s));
+    angleDiff = min(angleDiff, 1.0 - angleDiff);
+    float intensity = angleDiff < 0.012 ? 1.0 : 0.0;
     vec3 spectrum = color * intensity * 2.;
     vec3 finalColor ;
     

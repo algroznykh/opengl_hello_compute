@@ -43,6 +43,11 @@ struct RadarConfig {
     std::atomic<bool> autoFreq{false};
     std::atomic<float> autoGain{1.0f};
 
+    // NCA weight perturbation controls
+    std::atomic<float> ncaPerturb{0.0f};      // 0.0 (unperturbed) to 1.0 (heavy perturbation)
+    std::atomic<float> ncaSeed{0.0f};         // Mutation seed
+    std::atomic<float> ncaStepScale{1.0f};    // NCA reaction step scale (default 1.0)
+
     std::string scaleName() const {
         int s = scaleType.load();
         if (s == 1) return "mel";
@@ -67,6 +72,9 @@ struct RadarConfig {
         ss << "  \"detected_bpm\": " << detectedBpm.load() << ",\n";
         ss << "  \"auto_freq\": " << (autoFreq.load() ? "true" : "false") << ",\n";
         ss << "  \"auto_gain\": " << autoGain.load() << ",\n";
+        ss << "  \"nca_perturb\": " << ncaPerturb.load() << ",\n";
+        ss << "  \"nca_seed\": " << ncaSeed.load() << ",\n";
+        ss << "  \"nca_step_scale\": " << ncaStepScale.load() << ",\n";
         ss << "  \"fps\": " << currentFps.load() << ",\n";
         ss << "  \"frame\": " << frameCount.load() << "\n";
         ss << "}";
@@ -389,6 +397,31 @@ private:
                 m_config.autoFreq.store(boolVal);
             }
 
+            // Speed multiplier (e.g. 0.25x, 0.5x, 2.0x, 4.0x)
+            if (extractJsonFloat(body, "speed_multiplier", val)) {
+                if (val > 0.001f && val <= 10.0f) {
+                    float cur = m_config.scanningSpeed.load();
+                    float newSpeed = std::max(0.01f, std::min(10.0f, cur * val));
+                    m_config.scanningSpeed.store(newSpeed);
+                    m_config.autoSpeed.store(false);
+                }
+            }
+
+            // NCA weight perturbation controls
+            if (extractJsonFloat(body, "nca_perturb", val)) {
+                if (val >= 0.0f && val <= 2.0f) {
+                    m_config.ncaPerturb.store(val);
+                }
+            }
+            if (extractJsonFloat(body, "nca_seed", val)) {
+                m_config.ncaSeed.store(val);
+            }
+            if (extractJsonFloat(body, "nca_step_scale", val)) {
+                if (val >= 0.05f && val <= 5.0f) {
+                    m_config.ncaStepScale.store(val);
+                }
+            }
+
             std::string resBody = m_config.toJson();
             std::ostringstream response;
             response << "HTTP/1.1 200 OK\r\n"
@@ -422,6 +455,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       --card-border: #1a262f;
       --accent: #00ff88;
       --accent-rgb: 0, 255, 136;
+      --accent-cyan: #00e5ff;
       --text: #e2edf2;
       --text-muted: #6f8898;
       --track: #172028;
@@ -434,14 +468,14 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 24px 16px;
+      padding: 20px 16px;
     }
     .panel {
       width: 100%;
       max-width: 520px;
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 14px;
     }
     header {
       display: flex;
@@ -473,10 +507,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: 8px;
-      padding: 16px 18px;
+      padding: 14px 16px;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 9px;
     }
     .section-head {
       display: flex;
@@ -522,9 +556,9 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       background: #0f151c;
       border: 1px solid var(--card-border);
       color: var(--text);
-      padding: 6px 10px;
+      padding: 6px 8px;
       border-radius: 5px;
-      font-size: 0.74rem;
+      font-size: 0.73rem;
       cursor: pointer;
       transition: all 0.15s;
       flex: 1;
@@ -586,7 +620,15 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       </div>
       <input type="range" id="speedSlider" min="0.02" max="3.00" step="0.01" value="0.40">
       
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+      <!-- Speed multiplier controls: 2x/4x faster / slower -->
+      <div class="btn-row">
+        <button class="btn" onclick="multiplySpeed(0.25)" title="4x Slower">¼x Slower</button>
+        <button class="btn" onclick="multiplySpeed(0.5)" title="2x Slower">½x Slower</button>
+        <button class="btn" onclick="multiplySpeed(2.0)" title="2x Faster">2x Faster</button>
+        <button class="btn" onclick="multiplySpeed(4.0)" title="4x Faster">4x Faster</button>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:2px;">
         <button id="autoSpeedBtn" class="toggle-btn" onclick="toggleAutoSpeed()">
           ⚡ Auto Rhythm Sync
         </button>
@@ -639,21 +681,51 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         <span id="freqRangeVal" class="val">100 - 10000 Hz</span>
       </div>
 
-      <div style="display:flex; flex-direction:column; gap:4px;">
+      <div style="display:flex; flex-direction:column; gap:3px;">
         <div class="meta-row"><span>Min Freq</span><span id="minFreqVal">100 Hz</span></div>
         <input type="range" id="freqMinSlider" min="20" max="2000" step="10" value="100">
       </div>
 
-      <div style="display:flex; flex-direction:column; gap:4px; margin-top:4px;">
+      <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
         <div class="meta-row"><span>Max Freq</span><span id="maxFreqVal">10000 Hz</span></div>
         <input type="range" id="freqMaxSlider" min="200" max="20000" step="100" value="10000">
       </div>
 
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:4px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:2px;">
         <button id="autoFreqBtn" class="toggle-btn" onclick="toggleAutoFreq()">
           ⚡ Auto Freq & Scaling
         </button>
         <span id="gainLabel" class="meta-row" style="margin:0;">Gain: 1.0x</span>
+      </div>
+    </div>
+
+    <!-- NCA Weights Perturbation -->
+    <div class="section">
+      <div class="section-head">
+        <span class="section-title">NCA Weights Perturbation</span>
+        <span id="ncaVal" class="val">0.00</span>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:3px;">
+        <div class="meta-row"><span>Perturbation Amount</span><span id="ncaAmtVal">0.00</span></div>
+        <input type="range" id="ncaSlider" min="0.0" max="1.0" step="0.01" value="0.0">
+      </div>
+
+      <div class="btn-row">
+        <button class="btn active" id="ncaBtn0" onclick="setNca(0.0)">Off</button>
+        <button class="btn" id="ncaBtn1" onclick="setNca(0.15)">Subtle</button>
+        <button class="btn" id="ncaBtn2" onclick="setNca(0.45)">Deep</button>
+        <button class="btn" id="ncaBtn3" onclick="setNca(0.85)">Wild</button>
+      </div>
+
+      <div style="display:flex; gap:6px; margin-top:2px;">
+        <button class="toggle-btn" style="flex:1;" onclick="mutateNcaSeed()">🎲 Mutate Seed</button>
+        <button class="btn" style="flex:1;" onclick="resetNca()">Reset Weights</button>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
+        <div class="meta-row"><span>NCA Step Scale</span><span id="ncaStepVal">1.0x</span></div>
+        <input type="range" id="ncaStepSlider" min="0.2" max="2.0" step="0.05" value="1.0">
       </div>
     </div>
   </div>
@@ -664,15 +736,16 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       decay_time: 0.9950,
       freq_min: 100,
       freq_max: 10000,
-      freq_range_low: 0.0,
-      freq_range_high: 1.0,
       scale: "log",
       scale_type: 0,
       auto_speed: false,
       rhythm_division: 2,
       detected_bpm: 120.0,
       auto_freq: false,
-      auto_gain: 1.0
+      auto_gain: 1.0,
+      nca_perturb: 0.0,
+      nca_seed: 0.0,
+      nca_step_scale: 1.0
     };
 
     const connDot = document.getElementById('connDot');
@@ -680,6 +753,8 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     const decaySlider = document.getElementById('decaySlider');
     const freqMinSlider = document.getElementById('freqMinSlider');
     const freqMaxSlider = document.getElementById('freqMaxSlider');
+    const ncaSlider = document.getElementById('ncaSlider');
+    const ncaStepSlider = document.getElementById('ncaStepSlider');
 
     const speedVal = document.getElementById('speedVal');
     const decayVal = document.getElementById('decayVal');
@@ -689,6 +764,9 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     const scaleLabel = document.getElementById('scaleLabel');
     const bpmLabel = document.getElementById('bpmLabel');
     const gainLabel = document.getElementById('gainLabel');
+    const ncaVal = document.getElementById('ncaVal');
+    const ncaAmtVal = document.getElementById('ncaAmtVal');
+    const ncaStepVal = document.getElementById('ncaStepVal');
 
     const autoSpeedBtn = document.getElementById('autoSpeedBtn');
     const autoFreqBtn = document.getElementById('autoFreqBtn');
@@ -702,6 +780,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       minFreqVal.innerText = Math.round(s.freq_min) + ' Hz';
       maxFreqVal.innerText = Math.round(s.freq_max) + ' Hz';
       freqRangeVal.innerText = Math.round(s.freq_min) + ' - ' + Math.round(s.freq_max) + ' Hz';
+
+      ncaVal.innerText = Number(s.nca_perturb || 0).toFixed(2);
+      ncaAmtVal.innerText = Number(s.nca_perturb || 0).toFixed(2);
+      ncaStepVal.innerText = Number(s.nca_step_scale || 1.0).toFixed(2) + 'x';
 
       if (!autoSpeedBtn.matches(':active') && s.auto_speed !== undefined) {
         autoSpeedBtn.classList.toggle('active', !!s.auto_speed);
@@ -727,6 +809,12 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         const btn = document.getElementById('divBtn' + i);
         if (btn) btn.classList.toggle('active', s.rhythm_division === i);
       }
+
+      const np = s.nca_perturb || 0;
+      document.getElementById('ncaBtn0').classList.toggle('active', np < 0.05);
+      document.getElementById('ncaBtn1').classList.toggle('active', np >= 0.05 && np < 0.3);
+      document.getElementById('ncaBtn2').classList.toggle('active', np >= 0.3 && np < 0.65);
+      document.getElementById('ncaBtn3').classList.toggle('active', np >= 0.65);
     }
 
     function syncSliders() {
@@ -734,6 +822,8 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       decaySlider.value = state.decay_time;
       freqMinSlider.value = state.freq_min;
       freqMaxSlider.value = state.freq_max;
+      ncaSlider.value = state.nca_perturb;
+      ncaStepSlider.value = state.nca_step_scale;
       updateUI(state);
     }
 
@@ -753,7 +843,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           scale_type: parseInt(state.scale_type),
           auto_speed: !!state.auto_speed,
           rhythm_division: parseInt(state.rhythm_division),
-          auto_freq: !!state.auto_freq
+          auto_freq: !!state.auto_freq,
+          nca_perturb: parseFloat(state.nca_perturb),
+          nca_seed: parseFloat(state.nca_seed),
+          nca_step_scale: parseFloat(state.nca_step_scale)
         };
         const res = await fetch('/api/controls', {
           method: 'POST',
@@ -786,6 +879,24 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           sendControls();
         }
       }
+    }
+
+    async function multiplySpeed(factor) {
+      state.auto_speed = false;
+      autoSpeedBtn.classList.remove('active');
+      try {
+        const res = await fetch('/api/controls', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ speed_multiplier: factor })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          state.scanning_speed = data.scanning_speed;
+          speedSlider.value = data.scanning_speed;
+          updateUI(state);
+        }
+      } catch (e) {}
     }
 
     speedSlider.addEventListener('input', () => {
@@ -826,6 +937,18 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       sendControls();
     });
 
+    ncaSlider.addEventListener('input', () => {
+      state.nca_perturb = parseFloat(ncaSlider.value);
+      updateUI(state);
+      sendControls();
+    });
+
+    ncaStepSlider.addEventListener('input', () => {
+      state.nca_step_scale = parseFloat(ncaStepSlider.value);
+      updateUI(state);
+      sendControls();
+    });
+
     function setDecay(v) {
       decaySlider.value = v;
       state.decay_time = v;
@@ -858,6 +981,33 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       sendControls();
     }
 
+    function setNca(v) {
+      ncaSlider.value = v;
+      state.nca_perturb = v;
+      updateUI(state);
+      sendControls();
+    }
+
+    function mutateNcaSeed() {
+      state.nca_seed = Math.random() * 1000.0;
+      if (state.nca_perturb < 0.1) {
+        state.nca_perturb = 0.25;
+        ncaSlider.value = 0.25;
+      }
+      updateUI(state);
+      sendControls();
+    }
+
+    function resetNca() {
+      state.nca_perturb = 0.0;
+      state.nca_seed = 0.0;
+      state.nca_step_scale = 1.0;
+      ncaSlider.value = 0.0;
+      ncaStepSlider.value = 1.0;
+      updateUI(state);
+      sendControls();
+    }
+
     async function pollStatus() {
       try {
         const res = await fetch('/api/status');
@@ -882,6 +1032,14 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
             state.auto_gain = data.auto_gain;
             state.scale = data.scale;
             state.scale_type = data.scale_type;
+            if (data.nca_perturb !== undefined) {
+              state.nca_perturb = data.nca_perturb;
+              ncaSlider.value = data.nca_perturb;
+            }
+            if (data.nca_step_scale !== undefined) {
+              state.nca_step_scale = data.nca_step_scale;
+              ncaStepSlider.value = data.nca_step_scale;
+            }
             updateUI(state);
           }
         }

@@ -251,10 +251,11 @@ void audioProcessingLoop() {
         }
 
         // --- Musical Rhythm Tracking & Auto Speed ---
+        static std::vector<float> recentBeatIntervals;
         static float avgLowEnergy = 0.0f;
         static float energyVariance = 0.0f;
-        avgLowEnergy = 0.95f * avgLowEnergy + 0.05f * lowEnergy;
-        energyVariance = 0.95f * energyVariance + 0.05f * std::abs(lowEnergy - avgLowEnergy);
+        avgLowEnergy = 0.94f * avgLowEnergy + 0.06f * lowEnergy;
+        energyVariance = 0.94f * energyVariance + 0.06f * std::abs(lowEnergy - avgLowEnergy);
 
         static auto lastFrameTime = std::chrono::steady_clock::now();
         auto nowTime = std::chrono::steady_clock::now();
@@ -266,17 +267,27 @@ void audioProcessingLoop() {
         static float estimatedBpm = 120.0f;
         timeSinceBeat += dtAudio;
 
-        // Beat detection with dynamic threshold and refractory window (>= 220ms -> max ~270 BPM)
-        if (lowEnergy > (avgLowEnergy + 1.3f * energyVariance + 0.003f) && timeSinceBeat > 0.22f) {
+        // Beat detection: require audible energy, onset exceeding threshold, and refractory window (>= 220ms -> max ~270 BPM)
+        if (totalEnergy > 0.002f && lowEnergy > (avgLowEnergy + 1.2f * energyVariance + 0.002f) && timeSinceBeat > 0.22f) {
             float interval = timeSinceBeat;
             timeSinceBeat = 0.0f;
 
-            if (interval >= 0.25f && interval <= 2.0f) {
-                // Normalize to standard musical tempo window (60 - 180 BPM)
-                while (interval > 1.0f) interval *= 0.5f;
-                while (interval < 0.33f) interval *= 2.0f;
-                float instantBpm = 60.0f / interval;
-                estimatedBpm = 0.88f * estimatedBpm + 0.12f * instantBpm;
+            if (interval >= 0.22f && interval <= 2.5f) {
+                recentBeatIntervals.push_back(interval);
+                if (recentBeatIntervals.size() > 8) {
+                    recentBeatIntervals.erase(recentBeatIntervals.begin());
+                }
+
+                std::vector<float> sortedIntervals = recentBeatIntervals;
+                std::sort(sortedIntervals.begin(), sortedIntervals.end());
+                float medianInterval = sortedIntervals[sortedIntervals.size() / 2];
+
+                // Normalize to standard musical tempo window (70 - 160 BPM)
+                while (medianInterval > 0.85f) medianInterval *= 0.5f;
+                while (medianInterval < 0.35f) medianInterval *= 2.0f;
+
+                float instantBpm = 60.0f / medianInterval;
+                estimatedBpm = 0.95f * estimatedBpm + 0.05f * instantBpm;
                 g_radarConfig.detectedBpm.store(estimatedBpm);
             }
         }
@@ -292,7 +303,7 @@ void audioProcessingLoop() {
 
             float targetSpeed = estimatedBpm / divFactor;
             float curSpeed = g_radarConfig.scanningSpeed.load();
-            float smoothedSpeed = curSpeed * 0.94f + targetSpeed * 0.06f;
+            float smoothedSpeed = curSpeed * 0.96f + targetSpeed * 0.04f;
             g_radarConfig.scanningSpeed.store(smoothedSpeed);
         }
 
@@ -754,13 +765,24 @@ int main(int argc, char* argv[]) {
             currentComputeShader->setFloat("time", currentFrame);
             currentComputeShader->setInt("frame", frameCounter);
             
+            // Continuous radar phase integration (strictly monotonic forward rotation)
+            static float radarPhase = 0.0f;
+            float curSpeed = g_radarConfig.scanningSpeed.load();
+            radarPhase += curSpeed * deltaTime;
+            while (radarPhase >= 1.0f) radarPhase -= 1.0f;
+            while (radarPhase < 0.0f) radarPhase += 1.0f;
+
             // Set radar shader controls from web interface
-            currentComputeShader->setFloat("scan_speed", g_radarConfig.scanningSpeed.load());
+            currentComputeShader->setFloat("scan_phase", radarPhase);
+            currentComputeShader->setFloat("scan_speed", curSpeed);
             currentComputeShader->setFloat("decay_time", g_radarConfig.decayTime.load());
             currentComputeShader->setVec2("freq_range", g_radarConfig.freqRangeMin.load(), g_radarConfig.freqRangeMax.load());
             currentComputeShader->setFloat("freq_min_hz", g_radarConfig.freqMinHz.load());
             currentComputeShader->setFloat("freq_max_hz", g_radarConfig.freqMaxHz.load());
             currentComputeShader->setInt("scale_type", g_radarConfig.scaleType.load());
+            currentComputeShader->setFloat("nca_perturb", g_radarConfig.ncaPerturb.load());
+            currentComputeShader->setFloat("nca_seed", g_radarConfig.ncaSeed.load());
+            currentComputeShader->setFloat("nca_step_scale", g_radarConfig.ncaStepScale.load());
             
             // Update uniform buffer with frame counter and time
             frameCounter++;

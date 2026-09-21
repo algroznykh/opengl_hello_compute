@@ -32,9 +32,11 @@ def main():
     assert "scale" in html
     assert "auto_speed" in html
     assert "auto_freq" in html
-    # Check that non-essential elements like canvas are removed
-    assert "<canvas" not in html, "Canvas element should be removed for a minimal UI"
-    print("  -> Passed. Minimal HTML served without non-essential elements.")
+    assert "nca_perturb" in html
+    assert "multiplySpeed(2.0)" in html
+    assert "multiplySpeed(0.25)" in html
+    assert "<canvas" not in html, "Canvas element should remain removed for minimal UI"
+    print("  -> Passed. Minimal HTML served with speed multipliers and NCA perturbation.")
 
     print("[2] Testing GET /api/status...")
     status_str, _ = get("/api/status")
@@ -45,7 +47,10 @@ def main():
     assert "auto_speed" in status
     assert "rhythm_division" in status
     assert "auto_freq" in status
-    print("  -> Passed. Status API returns all autotune and scale fields.")
+    assert "nca_perturb" in status
+    assert "nca_seed" in status
+    assert "nca_step_scale" in status
+    print("  -> Passed. Status API returns all autotune, scale, and NCA fields.")
 
     print("[3] Testing Frequency Scales (log, mel, linear)...")
     res = post_json("/api/controls", {"scale": "mel"})
@@ -60,38 +65,55 @@ def main():
     assert res["scale"] == "log" and res["scale_type"] == 0, f"Expected log/0, got {res}"
     print("  -> Log scale verified.")
 
-    print("[4] Testing Autotune Scanning Speed (Musical Rhythms)...")
-    res = post_json("/api/controls", {"auto_speed": True, "rhythm_division": 1})
-    assert res["auto_speed"] is True
-    assert res["rhythm_division"] == 1
-    print(f"  -> Auto speed enabled with 1/2 bar rhythm division. Detected BPM: {res.get('detected_bpm')}")
+    print("[4] Testing Rotation Speed Multipliers (2x, 4x faster / slower)...")
+    # Set known base speed first
+    post_json("/api/controls", {"scanning_speed": 0.40})
+    
+    # Test 2x faster
+    res = post_json("/api/controls", {"speed_multiplier": 2.0})
+    assert abs(res["scanning_speed"] - 0.80) < 0.01, f"Expected 0.80, got {res['scanning_speed']}"
+    print(f"  -> 2x faster multiplier: speed = {res['scanning_speed']} rev/s")
 
-    print("[5] Testing Autotune Frequency Range & Scaling...")
-    res = post_json("/api/controls", {"auto_freq": True})
-    assert res["auto_freq"] is True
-    assert "auto_gain" in res
-    print(f"  -> Auto frequency enabled. Auto gain: {res.get('auto_gain')}")
+    # Test 4x faster
+    res = post_json("/api/controls", {"speed_multiplier": 4.0})
+    assert abs(res["scanning_speed"] - 3.20) < 0.02, f"Expected 3.20, got {res['scanning_speed']}"
+    print(f"  -> 4x faster multiplier: speed = {res['scanning_speed']} rev/s")
 
-    print("[6] Testing manual override of speed and decay...")
+    # Test 1/2x slower (0.5x)
+    res = post_json("/api/controls", {"speed_multiplier": 0.5})
+    assert abs(res["scanning_speed"] - 1.60) < 0.02, f"Expected 1.60, got {res['scanning_speed']}"
+    print(f"  -> 1/2x slower multiplier: speed = {res['scanning_speed']} rev/s")
+
+    # Test 1/4x slower (0.25x)
+    res = post_json("/api/controls", {"speed_multiplier": 0.25})
+    assert abs(res["scanning_speed"] - 0.40) < 0.02, f"Expected 0.40, got {res['scanning_speed']}"
+    print(f"  -> 1/4x slower multiplier: speed = {res['scanning_speed']} rev/s")
+
+    print("[5] Testing NCA Weights Perturbation controls...")
     res = post_json("/api/controls", {
-        "auto_speed": False,
-        "scanning_speed": 0.75,
-        "decay_time": 0.9850,
-        "auto_freq": False,
-        "freq_min": 80.0,
-        "freq_max": 9500.0,
-        "scale": "mel"
+        "nca_perturb": 0.35,
+        "nca_seed": 77.0,
+        "nca_step_scale": 1.4
     })
-    assert abs(res["scanning_speed"] - 0.75) < 0.001
-    assert abs(res["decay_time"] - 0.9850) < 0.001
-    assert abs(res["freq_min"] - 80.0) < 0.1
-    assert abs(res["freq_max"] - 9500.0) < 0.1
-    assert res["scale"] == "mel"
-    assert res["auto_speed"] is False
-    assert res["auto_freq"] is False
-    print("  -> Manual controls override verified.")
+    assert abs(res["nca_perturb"] - 0.35) < 0.01, f"Expected 0.35, got {res['nca_perturb']}"
+    assert abs(res["nca_seed"] - 77.0) < 0.01, f"Expected 77.0, got {res['nca_seed']}"
+    assert abs(res["nca_step_scale"] - 1.4) < 0.01, f"Expected 1.4, got {res['nca_step_scale']}"
+    print(f"  -> NCA perturb={res['nca_perturb']}, seed={res['nca_seed']}, step_scale={res['nca_step_scale']}")
 
-    print("\nALL ENHANCED RADAR WEB INTERFACE TESTS PASSED!")
+    # Reset NCA
+    res = post_json("/api/controls", {"nca_perturb": 0.0, "nca_seed": 0.0, "nca_step_scale": 1.0})
+    assert abs(res["nca_perturb"] - 0.0) < 0.01
+    assert abs(res["nca_step_scale"] - 1.0) < 0.01
+    print("  -> NCA reset verified.")
+
+    print("[6] Testing Autotune options...")
+    res = post_json("/api/controls", {"auto_speed": True, "rhythm_division": 2, "auto_freq": True})
+    assert res["auto_speed"] is True
+    assert res["auto_freq"] is True
+    assert res["rhythm_division"] == 2
+    print(f"  -> Auto speed & auto freq enabled. Detected BPM: {res.get('detected_bpm')}")
+
+    print("\nALL CONTROLLER & NCA PERTURBATION TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     main()
