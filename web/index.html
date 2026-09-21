@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Radar Shader Controller</title>
+  <style>
+    :root {
+      --bg: #070a0e;
+      --card-bg: #0e141b;
+      --card-border: #162420;
+      --accent-green: #00ff88;
+      --accent-cyan: #00e5ff;
+      --accent-dim: #13382c;
+      --accent-glow: rgba(0, 255, 136, 0.25);
+      --text: #e0f2ee;
+      --text-muted: #5e8379;
+      --slider-track: #14201c;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, monospace, sans-serif; }
+    body {
+      background-color: var(--bg);
+      background-image: 
+        radial-gradient(ellipse at top, rgba(0, 255, 136, 0.05), transparent 70%),
+        linear-gradient(rgba(18, 24, 32, 0.3) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(18, 24, 32, 0.3) 1px, transparent 1px);
+      background-size: 100% 100%, 20px 20px, 20px 20px;
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px;
+    }
+    .container {
+      width: 100%;
+      max-width: 960px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 18px 24px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0, 255, 136, 0.04);
+    }
+    .title-area {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .radar-icon {
+      width: 28px;
+      height: 28px;
+      border: 2px solid var(--accent-green);
+      border-radius: 50%;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .radar-icon::after {
+      content: '';
+      width: 6px;
+      height: 6px;
+      background: var(--accent-green);
+      border-radius: 50%;
+      box-shadow: 0 0 6px var(--accent-green);
+    }
+    .title-area h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: 2px;
+      color: var(--accent-green);
+      text-transform: uppercase;
+      text-shadow: 0 0 12px rgba(0, 255, 136, 0.4);
+    }
+    .badge {
+      font-size: 0.75rem;
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .badge::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .badge-online {
+      background: rgba(0, 255, 136, 0.1);
+      color: var(--accent-green);
+      border: 1px solid var(--accent-green);
+    }
+    .badge-online::before {
+      background: var(--accent-green);
+      box-shadow: 0 0 8px var(--accent-green);
+      animation: pulse 1.5s infinite;
+    }
+    .badge-offline {
+      background: rgba(255, 68, 68, 0.1);
+      color: #ff5555;
+      border: 1px solid #ff5555;
+    }
+    .badge-offline::before {
+      background: #ff5555;
+    }
+    @keyframes pulse {
+      0% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+      100% { opacity: 1; transform: scale(1); }
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    @media (max-width: 800px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      box-shadow: 0 2px 16px rgba(0, 0, 0, 0.2);
+    }
+    .card-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--accent-cyan);
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 10px;
+    }
+    .radar-preview-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 290px;
+    }
+    canvas#radarCanvas {
+      width: 230px;
+      height: 230px;
+      border-radius: 50%;
+      background: #050b0b;
+      border: 2px solid var(--accent-dim);
+      box-shadow: 0 0 30px rgba(0, 255, 136, 0.12);
+    }
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .control-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+    .control-value {
+      color: var(--accent-green);
+      font-family: monospace;
+      font-weight: 700;
+      font-size: 0.95rem;
+      text-shadow: 0 0 8px rgba(0, 255, 136, 0.3);
+    }
+    input[type=range] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: var(--slider-track);
+      outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      cursor: pointer;
+      box-shadow: 0 0 10px var(--accent-green);
+      transition: transform 0.1s;
+    }
+    input[type=range]::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+    }
+    .btn-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    button.btn {
+      background: #111a19;
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      padding: 7px 13px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    button.btn:hover {
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+      background: rgba(0, 255, 136, 0.08);
+    }
+    button.btn-active {
+      background: rgba(0, 255, 136, 0.15);
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+      box-shadow: 0 0 8px rgba(0, 255, 136, 0.2);
+    }
+    .stats-bar {
+      display: flex;
+      justify-content: space-around;
+      padding: 14px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .stat-val {
+      color: var(--accent-cyan);
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="title-area">
+        <div class="radar-icon"></div>
+        <h1>Radar Shader Controls</h1>
+      </div>
+      <div id="statusBadge" class="badge badge-offline">CONNECTING...</div>
+    </header>
+
+    <div class="stats-bar">
+      <div>FPS: <span id="statFps" class="stat-val">--</span></div>
+      <div>FRAME: <span id="statFrame" class="stat-val">--</span></div>
+      <div>SWEEP: <span id="statSweep" class="stat-val">0.40 rev/s</span></div>
+      <div>DECAY: <span id="statDecay" class="stat-val">0.9950</span></div>
+      <div>FREQ: <span id="statFreq" class="stat-val">100 - 10000 Hz</span></div>
+    </div>
+
+    <div class="grid">
+      <!-- Radar Simulation Canvas -->
+      <div class="card radar-preview-card">
+        <canvas id="radarCanvas" width="240" height="240"></canvas>
+        <div style="font-size:0.75rem; color:var(--text-muted); margin-top:10px; letter-spacing:1px; text-transform:uppercase;">
+          Live Radar Beam & Phosphor Preview
+        </div>
+      </div>
+
+      <!-- Radar Motion & Decay -->
+      <div class="card">
+        <div class="card-title">
+          <span>Beam & Persistence</span>
+        </div>
+
+        <!-- Scanning Speed -->
+        <div class="control-group">
+          <div class="control-label">
+            <span>Scanning Speed (Sweep Rate)</span>
+            <span id="speedVal" class="control-value">0.40 rev/s</span>
+          </div>
+          <input type="range" id="speedSlider" min="0.05" max="3.00" step="0.05" value="0.40">
+          <div class="btn-group">
+            <button class="btn" onclick="setSpeed(0.1)">0.10x Slow</button>
+            <button class="btn btn-active" onclick="setSpeed(0.4)">0.40x Default</button>
+            <button class="btn" onclick="setSpeed(1.0)">1.00x 1 rev/s</button>
+            <button class="btn" onclick="setSpeed(2.0)">2.00x Fast</button>
+          </div>
+        </div>
+
+        <!-- Decay Time -->
+        <div class="control-group">
+          <div class="control-label">
+            <span>Decay Time (Persistence Factor)</span>
+            <span id="decayVal" class="control-value">0.9950 (~2.3s)</span>
+          </div>
+          <input type="range" id="decaySlider" min="0.8000" max="0.9995" step="0.0005" value="0.9950">
+          <div class="btn-group">
+            <button class="btn" onclick="setDecay(0.9000)">Fast (0.90)</button>
+            <button class="btn" onclick="setDecay(0.9700)">Med (0.97)</button>
+            <button class="btn btn-active" onclick="setDecay(0.9950)">Default (0.995)</button>
+            <button class="btn" onclick="setDecay(0.9990)">Ghost (0.999)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Frequency Range Card -->
+    <div class="card">
+      <div class="card-title">
+        <span>Audio FFT & Shader Frequency Range</span>
+      </div>
+
+      <div class="grid" style="gap:16px;">
+        <div class="control-group">
+          <div class="control-label">
+            <span>Min Audible Frequency (Center/Low)</span>
+            <span id="freqMinVal" class="control-value">100 Hz</span>
+          </div>
+          <input type="range" id="freqMinSlider" min="20" max="2000" step="10" value="100">
+        </div>
+
+        <div class="control-group">
+          <div class="control-label">
+            <span>Max Audible Frequency (Edge/High)</span>
+            <span id="freqMaxVal" class="control-value">10000 Hz</span>
+          </div>
+          <input type="range" id="freqMaxSlider" min="500" max="20000" step="100" value="10000">
+        </div>
+      </div>
+
+      <div class="control-group" style="margin-top: 4px;">
+        <div class="control-label">
+          <span>Shader Radial Span (Spectrum Window)</span>
+          <span id="spanVal" class="control-value">0% - 100%</span>
+        </div>
+        <div style="display:flex; gap:10px;">
+          <input type="range" id="spanMinSlider" min="0.0" max="0.9" step="0.05" value="0.0" style="flex:1;">
+          <input type="range" id="spanMaxSlider" min="0.1" max="1.0" step="0.05" value="1.0" style="flex:1;">
+        </div>
+      </div>
+
+      <div class="btn-group">
+        <span style="font-size:0.75rem; color:var(--text-muted); align-self:center; margin-right:6px;">Presets:</span>
+        <button class="btn" onclick="setFreqBand(20, 20000)">Full Spectrum (20Hz - 20kHz)</button>
+        <button class="btn" onclick="setFreqBand(20, 300)">Sub & Bass (20Hz - 300Hz)</button>
+        <button class="btn" onclick="setFreqBand(250, 4000)">Voice & Mids (250Hz - 4kHz)</button>
+        <button class="btn" onclick="setFreqBand(4000, 18000)">Highs & Air (4kHz - 18kHz)</button>
+        <button class="btn btn-active" onclick="setFreqBand(100, 10000)">Default (100Hz - 10kHz)</button>
+      </div>
+    </div>
+
+    <!-- Presets Card -->
+    <div class="card">
+      <div class="card-title">
+        <span>Global Presets</span>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-active" onclick="applyPreset('default')">Default Radar</button>
+        <button class="btn" onclick="applyPreset('sonar')">Deep Sub Sonar</button>
+        <button class="btn" onclick="applyPreset('strobe')">Fast Strobe Visualizer</button>
+        <button class="btn" onclick="applyPreset('phosphor')">Long Phosphor Glow</button>
+        <button class="btn" onclick="applyPreset('matrix')">High Sweep Matrix</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let state = {
+      scanning_speed: 0.40,
+      decay_time: 0.9950,
+      freq_min: 100,
+      freq_max: 10000,
+      freq_range_low: 0.0,
+      freq_range_high: 1.0,
+      fps: 0,
+      frame: 0
+    };
+
+    const speedSlider = document.getElementById('speedSlider');
+    const decaySlider = document.getElementById('decaySlider');
+    const freqMinSlider = document.getElementById('freqMinSlider');
+    const freqMaxSlider = document.getElementById('freqMaxSlider');
+    const spanMinSlider = document.getElementById('spanMinSlider');
+    const spanMaxSlider = document.getElementById('spanMaxSlider');
+
+    const speedVal = document.getElementById('speedVal');
+    const decayVal = document.getElementById('decayVal');
+    const freqMinVal = document.getElementById('freqMinVal');
+    const freqMaxVal = document.getElementById('freqMaxVal');
+    const spanVal = document.getElementById('spanVal');
+
+    const statFps = document.getElementById('statFps');
+    const statFrame = document.getElementById('statFrame');
+    const statSweep = document.getElementById('statSweep');
+    const statDecay = document.getElementById('statDecay');
+    const statFreq = document.getElementById('statFreq');
+    const statusBadge = document.getElementById('statusBadge');
+
+    let isSending = false;
+    let pendingUpdate = false;
+
+    function calculateHalfLife(decay) {
+      if (decay >= 0.9999) return 'inf';
+      if (decay <= 0) return '0s';
+      const halfLifeSec = Math.log(0.5) / (60 * Math.log(decay));
+      return halfLifeSec < 1 ? (halfLifeSec * 1000).toFixed(0) + 'ms' : halfLifeSec.toFixed(1) + 's';
+    }
+
+    function updateUI(s) {
+      speedVal.innerText = Number(s.scanning_speed).toFixed(2) + ' rev/s';
+      decayVal.innerText = Number(s.decay_time).toFixed(4) + ' (~' + calculateHalfLife(s.decay_time) + ')';
+      freqMinVal.innerText = Math.round(s.freq_min) + ' Hz';
+      freqMaxVal.innerText = Math.round(s.freq_max) + ' Hz';
+      spanVal.innerText = Math.round(s.freq_range_low * 100) + '% - ' + Math.round(s.freq_range_high * 100) + '%';
+
+      statSweep.innerText = Number(s.scanning_speed).toFixed(2) + ' rev/s';
+      statDecay.innerText = Number(s.decay_time).toFixed(4);
+      statFreq.innerText = Math.round(s.freq_min) + ' - ' + Math.round(s.freq_max) + ' Hz';
+
+      if (s.fps > 0) statFps.innerText = s.fps.toFixed(1);
+      if (s.frame > 0) statFrame.innerText = s.frame;
+    }
+
+    function syncSlidersFromState() {
+      speedSlider.value = state.scanning_speed;
+      decaySlider.value = state.decay_time;
+      freqMinSlider.value = state.freq_min;
+      freqMaxSlider.value = state.freq_max;
+      spanMinSlider.value = state.freq_range_low;
+      spanMaxSlider.value = state.freq_range_high;
+      updateUI(state);
+    }
+
+    async function sendControls() {
+      if (isSending) {
+        pendingUpdate = true;
+        return;
+      }
+      isSending = true;
+      try {
+        const payload = {
+          scanning_speed: parseFloat(state.scanning_speed),
+          decay_time: parseFloat(state.decay_time),
+          freq_min: parseFloat(state.freq_min),
+          freq_max: parseFloat(state.freq_max),
+          freq_range_low: parseFloat(state.freq_range_low),
+          freq_range_high: parseFloat(state.freq_range_high)
+        };
+        const res = await fetch('/api/controls', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+          const data = await res.json();
+          statusBadge.className = 'badge badge-online';
+          statusBadge.innerText = 'ONLINE';
+          if (data.fps) statFps.innerText = Number(data.fps).toFixed(1);
+          if (data.frame) statFrame.innerText = data.frame;
+        }
+      } catch (err) {
+        statusBadge.className = 'badge badge-offline';
+        statusBadge.innerText = 'DISCONNECTED';
+      } finally {
+        isSending = false;
+        if (pendingUpdate) {
+          pendingUpdate = false;
+          sendControls();
+        }
+      }
+    }
+
+    function onSliderChange() {
+      state.scanning_speed = parseFloat(speedSlider.value);
+      state.decay_time = parseFloat(decaySlider.value);
+      state.freq_min = parseFloat(freqMinSlider.value);
+      state.freq_max = parseFloat(freqMaxSlider.value);
+      state.freq_range_low = parseFloat(spanMinSlider.value);
+      state.freq_range_high = parseFloat(spanMaxSlider.value);
+
+      if (state.freq_min >= state.freq_max) {
+        state.freq_max = state.freq_min + 100;
+        freqMaxSlider.value = state.freq_max;
+      }
+      if (state.freq_range_low >= state.freq_range_high) {
+        state.freq_range_high = Math.min(1.0, state.freq_range_low + 0.05);
+        spanMaxSlider.value = state.freq_range_high;
+      }
+
+      updateUI(state);
+      sendControls();
+    }
+
+    [speedSlider, decaySlider, freqMinSlider, freqMaxSlider, spanMinSlider, spanMaxSlider].forEach(el => {
+      el.addEventListener('input', onSliderChange);
+    });
+
+    function setSpeed(v) {
+      speedSlider.value = v;
+      onSliderChange();
+    }
+    function setDecay(v) {
+      decaySlider.value = v;
+      onSliderChange();
+    }
+    function setFreqBand(min, max) {
+      freqMinSlider.value = min;
+      freqMaxSlider.value = max;
+      onSliderChange();
+    }
+
+    function applyPreset(name) {
+      if (name === 'default') {
+        state.scanning_speed = 0.40;
+        state.decay_time = 0.9950;
+        state.freq_min = 100;
+        state.freq_max = 10000;
+        state.freq_range_low = 0.0;
+        state.freq_range_high = 1.0;
+      } else if (name === 'sonar') {
+        state.scanning_speed = 0.15;
+        state.decay_time = 0.9980;
+        state.freq_min = 20;
+        state.freq_max = 500;
+        state.freq_range_low = 0.0;
+        state.freq_range_high = 1.0;
+      } else if (name === 'strobe') {
+        state.scanning_speed = 1.80;
+        state.decay_time = 0.9100;
+        state.freq_min = 60;
+        state.freq_max = 14000;
+        state.freq_range_low = 0.0;
+        state.freq_range_high = 1.0;
+      } else if (name === 'phosphor') {
+        state.scanning_speed = 0.25;
+        state.decay_time = 0.9990;
+        state.freq_min = 50;
+        state.freq_max = 12000;
+        state.freq_range_low = 0.0;
+        state.freq_range_high = 1.0;
+      } else if (name === 'matrix') {
+        state.scanning_speed = 0.90;
+        state.decay_time = 0.9800;
+        state.freq_min = 200;
+        state.freq_max = 8000;
+        state.freq_range_low = 0.1;
+        state.freq_range_high = 0.9;
+      }
+      syncSlidersFromState();
+      sendControls();
+    }
+
+    async function pollStatus() {
+      try {
+        const res = await fetch('/api/status');
+        if (res.ok) {
+          const data = await res.json();
+          statusBadge.className = 'badge badge-online';
+          statusBadge.innerText = 'ONLINE';
+          if (!isSending) {
+            state.fps = data.fps;
+            state.frame = data.frame;
+            updateUI(state);
+          }
+        }
+      } catch (err) {
+        statusBadge.className = 'badge badge-offline';
+        statusBadge.innerText = 'DISCONNECTED';
+      }
+    }
+
+    // Live canvas radar visualization matching parameters
+    const canvas = document.getElementById('radarCanvas');
+    const ctx = canvas.getContext('2d');
+    let currentAngle = 0;
+    let lastTime = performance.now();
+
+    function drawRadar() {
+      const now = performance.now();
+      const dt = (now - lastTime) / 1000;
+      lastTime = now;
+
+      // Update radar angle based on scanning_speed
+      currentAngle += (state.scanning_speed * 2 * Math.PI) * dt;
+
+      const w = canvas.width;
+      const h = canvas.height;
+      const cx = w / 2;
+      const cy = h / 2;
+      const radius = w / 2 - 10;
+
+      // Fade canvas using decay_time
+      ctx.fillStyle = 'rgba(5, 11, 11, 0.08)';
+      ctx.fillRect(0, 0, w, h);
+
+      // Concentric circles
+      ctx.strokeStyle = 'rgba(0, 255, 136, 0.15)';
+      ctx.lineWidth = 1;
+      for (let r = radius / 4; r <= radius; r += radius / 4) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+        ctx.stroke();
+      }
+
+      // Crosshairs
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - radius);
+      ctx.lineTo(cx, cy + radius);
+      ctx.moveTo(cx - radius, cy);
+      ctx.lineTo(cx + radius, cy);
+      ctx.stroke();
+
+      // Radar sweep beam
+      const beamX = cx + Math.cos(currentAngle) * radius;
+      const beamY = cy + Math.sin(currentAngle) * radius;
+
+      const grad = ctx.createRadialGradient(cx, cy, 5, cx, cy, radius);
+      grad.addColorStop(0, 'rgba(0, 255, 136, 0.9)');
+      grad.addColorStop(1, 'rgba(0, 229, 255, 0.3)');
+
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(beamX, beamY);
+      ctx.stroke();
+
+      requestAnimationFrame(drawRadar);
+    }
+
+    // Initialize
+    syncSlidersFromState();
+    pollStatus();
+    setInterval(pollStatus, 1500);
+    requestAnimationFrame(drawRadar);
+  </script>
+</body>
+</html>

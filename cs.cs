@@ -11,6 +11,11 @@ layout(rgba32f, binding = 3) uniform image2D backbuffer;
 
 layout (location = 0) uniform float time;                 /** Time */
 layout (location = 1) uniform int frame;                
+uniform float scan_speed;
+uniform float decay_time;
+uniform vec2 freq_range;
+uniform float freq_min_hz;
+uniform float freq_max_hz;
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
@@ -301,7 +306,7 @@ vec4 interp(ivec2 coord, int n) {
     return res/pow(n+2, 2.);
 }
 
-vec4 sampleBilinear(image2D img, vec2 uv) {
+/* vec4 sampleBilinear(image2D img, vec2 uv) {
     vec2 texSize = vec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
     vec2 pixelCoord = uv * texSize - 0.5;
     vec2 floorCoord = floor(pixelCoord);
@@ -369,7 +374,7 @@ vec4 sampleLoG(image2D img, vec2 uv) {
     }
     
     return result / 16.0; // Normalize
-}
+} */
 
 void main() {
     ivec2 screen_size = imageSize(outputTexture);
@@ -384,7 +389,10 @@ void main() {
 
     float radius = length(centered);
     float angle = atan(centered.y, centered.x);
-    float s = time / 2.5;
+    
+    // Scanning speed control (defaults to 0.4 rev/s matching original time / 2.5)
+    float effectiveSpeed = (scan_speed > 0.0001) ? scan_speed : 0.4;
+    float s = time * effectiveSpeed;
     
     // Normalize angle to [0, 1] range
     angle = (angle + 3.14159) / (2.0 * 3.14159);
@@ -397,11 +405,16 @@ void main() {
     // Sample camera input
     vec4 cameraColor = imageLoad(camTexture, texelCoord);
 
-    // Get audio data - map angle to musical scale bins for circular spectrogram
+    // Get audio data - map angle/radius to musical scale bins for circular spectrogram
     float MUSICAL_BINS = 88.0 * 4.; // Fixed number of musical scale bins
-    //int audioIndex = int((1.-radius) * MUSICAL_BINS);
-    // SPECTRAL
-    int audioIndex = int(( 1. - radius / 1. - .3 ) * MUSICAL_BINS);
+
+    // Frequency range control: map radial distance across selected normalized frequency window [fmin, fmax]
+    float fmin = clamp(freq_range.x, 0.0, 1.0);
+    float fmax = clamp(freq_range.y, 0.0, 1.0);
+    if (fmax <= fmin) fmax = 1.0;
+    float radNorm = clamp((1.0 - radius / 0.8), 0.0, 1.0);
+    float freqNorm = mix(fmin, fmax, radNorm);
+    int audioIndex = int(freqNorm * (MUSICAL_BINS - 1.0));
     audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS)-1);
     
     int SPECTRUM_SHIFT = 0;
@@ -427,7 +440,9 @@ void main() {
     //back += vec4(spectrum, 1.);
     back = max(back,vec4(spectrum,1.));
 
-    back *= .995;
+    // Radar decay persistence control (defaults to 0.995)
+    float effectiveDecay = (decay_time > 0.0001) ? clamp(decay_time, 0.5, 0.9999) : 0.995;
+    back *= effectiveDecay;
     //back += vec4(spectrum, 1.) * vec4(.99, .98, .97, 1.);
     //back *= vec4(.9995, .99, .9995, 1.);
     imageStore(backbuffer, texelCoord, back);

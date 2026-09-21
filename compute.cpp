@@ -16,6 +16,13 @@
 
 #include "shader_c.h"
 #include "shader_m.h"
+#include "web_server.h"
+
+// Global radar configuration and web server
+RadarConfig g_radarConfig;
+RadarWebServer* g_webServer = nullptr;
+int WEB_PORT = 8080;
+bool ENABLE_WEB = true;
 
 // Global texture and buffer handles for recreation
 unsigned int outputTexture, audioTexture, cameraTexture, backbufferTexture;
@@ -231,12 +238,17 @@ void audioProcessingLoop() {
         }
 
         // Map to logarithmic frequency scale for even overtone spacing
+        float curMinFreq = g_radarConfig.freqMinHz.load();
+        float curMaxFreq = g_radarConfig.freqMaxHz.load();
+        if (curMinFreq < 10.0f) curMinFreq = 10.0f;
+        if (curMaxFreq <= curMinFreq) curMaxFreq = curMinFreq + 100.0f;
+
+        float logMinFreq = log2(curMinFreq);
+        float logMaxFreq = log2(curMaxFreq);
+        float logRange = logMaxFreq - logMinFreq;
+        
         for (int i = 0; i < MUSICAL_BINS; i++) {
-            // Logarithmic frequency distribution from MIN_AUDIBLE_FREQ to MAX_AUDIBLE_FREQ
-            float logMinFreq = log2(MIN_AUDIBLE_FREQ);
-            float logMaxFreq = log2(MAX_AUDIBLE_FREQ);
-            float logRange = logMaxFreq - logMinFreq;
-            
+            // Logarithmic frequency distribution from curMinFreq to curMaxFreq
             // Map bin index to logarithmic frequency
             float logFreq = logMinFreq + (logRange * i) / (MUSICAL_BINS - 1);
             float targetFreq = pow(2, logFreq);
@@ -350,11 +362,24 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Error: --camera requires a device number" << std::endl;
                 return -1;
             }
+        } else if (arg == "--port" || arg == "-p") {
+            if (i + 1 < argc) {
+                WEB_PORT = std::stoi(argv[i + 1]);
+                i++;
+                std::cout << "Using web port: " << WEB_PORT << std::endl;
+            } else {
+                std::cerr << "Error: --port requires a port number" << std::endl;
+                return -1;
+            }
+        } else if (arg == "--no-web") {
+            ENABLE_WEB = false;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [OPTIONS]" << std::endl;
             std::cout << "Options:" << std::endl;
             std::cout << "  -c, --camera <device>   Use camera device number (default: no camera)" << std::endl;
-            std::cout << "  -h, --help             Show this help message" << std::endl;
+            std::cout << "  -p, --port <port>       Web interface port (default: 8080)" << std::endl;
+            std::cout << "  --no-web                Disable web interface" << std::endl;
+            std::cout << "  -h, --help              Show this help message" << std::endl;
             return 0;
         } else {
             std::cerr << "Unknown argument: " << arg << std::endl;
@@ -362,6 +387,14 @@ int main(int argc, char* argv[]) {
             return -1;
         }
     }
+
+    if (ENABLE_WEB) {
+        g_webServer = new RadarWebServer(g_radarConfig, WEB_PORT);
+        if (!g_webServer->start()) {
+            std::cerr << "[Warning] Failed to start web interface on port " << WEB_PORT << std::endl;
+        }
+    }
+
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -566,9 +599,16 @@ int main(int argc, char* argv[]) {
         lastFrame = currentFrame;
         processInput(window);
 
-        if(fCounter > 500) {
-            std::cout << "FPS: " << 1 / deltaTime << std::endl;
-            fCounter = 0;
+        if(fCounter > 60) {
+            float fps = (deltaTime > 0.0f) ? (1.0f / deltaTime) : 0.0f;
+            g_radarConfig.currentFps.store(fps);
+            g_radarConfig.frameCount.store(frameCounter);
+            if (fCounter > 500) {
+                std::cout << "FPS: " << fps << std::endl;
+                fCounter = 0;
+            } else {
+                fCounter++;
+            }
         } else {
             fCounter++;
         }
@@ -601,6 +641,13 @@ int main(int argc, char* argv[]) {
             currentComputeShader->use();
             currentComputeShader->setFloat("time", currentFrame);
             currentComputeShader->setInt("frame", frameCounter);
+            
+            // Set radar shader controls from web interface
+            currentComputeShader->setFloat("scan_speed", g_radarConfig.scanningSpeed.load());
+            currentComputeShader->setFloat("decay_time", g_radarConfig.decayTime.load());
+            currentComputeShader->setVec2("freq_range", g_radarConfig.freqRangeMin.load(), g_radarConfig.freqRangeMax.load());
+            currentComputeShader->setFloat("freq_min_hz", g_radarConfig.freqMinHz.load());
+            currentComputeShader->setFloat("freq_max_hz", g_radarConfig.freqMaxHz.load());
             
             // Update uniform buffer with frame counter and time
             frameCounter++;
@@ -649,6 +696,11 @@ int main(int argc, char* argv[]) {
     }
 
     // Cleanup
+    if (g_webServer) {
+        g_webServer->stop();
+        delete g_webServer;
+        g_webServer = nullptr;
+    }
     cleanupAudio();
     cleanupCamera();
     
