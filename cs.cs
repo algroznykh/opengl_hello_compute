@@ -20,6 +20,8 @@ uniform int scale_type;
 uniform float scan_phase;
 uniform float nca_step_scale;
 uniform float nca_topology; // 0.0 = Cartesian, 1.0 = Polar (pole in center)
+uniform float nca_pole_radial;    // +1.0 = outward pole, -1.0 = reversed/inward pole
+uniform float nca_pole_azimuthal; // +1.0 = standard CCW spin, -1.0 = reversed CW spin
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
@@ -182,25 +184,29 @@ float raw_soby(uint c) {
 
 // Polar rotated Sobel filters w.r.t. coordinate (pole in center)
 float sobx(uint c) {
-    if (nca_topology < 0.001) {
+    if (abs(nca_topology) < 0.001) {
         return raw_sobx(c);
     }
     vec2 caCenter = vec2(float(SW), float(SH)) * 0.5;
     vec2 caDiff = vec2(current_index) - caCenter;
     float caAngle = atan(caDiff.y, caDiff.x);
     float phi = caAngle * nca_topology;
-    return cos(phi) * raw_sobx(c) + sin(phi) * raw_soby(c);
+    float effRadialSign = (abs(nca_pole_radial) > 0.01) ? sign(nca_pole_radial) : 1.0;
+    float radial = (cos(phi) * raw_sobx(c) + sin(phi) * raw_soby(c)) * effRadialSign;
+    return mix(raw_sobx(c), radial, abs(nca_topology));
 }
 
 float soby(uint c) {
-    if (nca_topology < 0.001) {
+    if (abs(nca_topology) < 0.001) {
         return raw_soby(c);
     }
     vec2 caCenter = vec2(float(SW), float(SH)) * 0.5;
     vec2 caDiff = vec2(current_index) - caCenter;
     float caAngle = atan(caDiff.y, caDiff.x);
     float phi = caAngle * nca_topology;
-    return -sin(phi) * raw_sobx(c) + cos(phi) * raw_soby(c);
+    float effAzimSign = (abs(nca_pole_azimuthal) > 0.01) ? sign(nca_pole_azimuthal) : 1.0;
+    float azimuthal = (-sin(phi) * raw_sobx(c) + cos(phi) * raw_soby(c)) * effAzimSign;
+    return mix(raw_soby(c), azimuthal, abs(nca_topology));
 }
 
 float[12] update(float[12] xs, float[12] ps) {
@@ -457,18 +463,18 @@ void main() {
         current_index = ivec2(int(gl_GlobalInvocationID.x), int(gl_GlobalInvocationID.y));
 
         float[12] ps = float[12](
-            lap(0u),// + value.r * 2. - tex.x * radius * 5.,
-            lap(1u),// + value.g  - tex.y * radius * 5.,
-            lap(2u),// + value.b  - tex.z * radius * 5.,
-            lap(3u),// - tex.b * 2.,
-            soby(4u) * .5 + sobx(4u) * .5,// - tex.r * 2.,
-            soby(5u) * .5 + sobx(5u) * .5, 
-            soby(6u) * .5 + sobx(6u) * .5, 
-            soby(7u) * .5 + sobx(7u) * .5,
-            sobx(8u) * .5 + soby(8u)  * .5,// - tex.b * 2.,
-            sobx(9u) * .5 + soby(9u)  * .5,
-            sobx(10u)* .5 + soby(10u) * .5,
-            sobx(11u)* .5 + soby(11u) * .5
+            lap(0u),
+            lap(1u),
+            lap(2u),
+            lap(3u),
+            sobx(4u),
+            sobx(5u), 
+            sobx(6u), 
+            sobx(7u),
+            soby(8u),
+            soby(9u),
+            soby(10u),
+            soby(11u)
         );
         
         // Update state

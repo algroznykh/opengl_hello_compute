@@ -58,6 +58,10 @@ struct RadarConfig {
 
     // Topology control: 0.0 = Cartesian, 1.0 = Polar (pole in center)
     std::atomic<float> ncaTopology{0.0f};
+    std::atomic<float> ncaPoleRadial{1.0f};    // +1.0 = outward, -1.0 = inward (reversed radial pole)
+    std::atomic<float> ncaPoleAzimuthal{1.0f}; // +1.0 = CCW, -1.0 = CW (reversed spin)
+    std::atomic<bool> ncaReversePole{false};
+    std::atomic<bool> ncaReverseSpin{false};
 
     // Human-Assisted Genetic Algorithm state
     std::atomic<int> ncaGeneration{0};
@@ -171,6 +175,10 @@ struct RadarConfig {
         ss << "  \"nca_step_scale\": " << ncaStepScale.load() << ",\n";
         ss << "  \"nca_topology\": " << ncaTopology.load() << ",\n";
         ss << "  \"topology\": \"" << (ncaTopology.load() > 0.5f ? "polar" : "cartesian") << "\",\n";
+        ss << "  \"nca_pole_radial\": " << ncaPoleRadial.load() << ",\n";
+        ss << "  \"nca_pole_azimuthal\": " << ncaPoleAzimuthal.load() << ",\n";
+        ss << "  \"reverse_pole\": " << (ncaReversePole.load() ? "true" : "false") << ",\n";
+        ss << "  \"reverse_spin\": " << (ncaReverseSpin.load() ? "true" : "false") << ",\n";
         ss << "  \"genetic_generation\": " << ncaGeneration.load() << ",\n";
         ss << "  \"genetic_has_candidate\": " << (ncaHasCandidate.load() ? "true" : "false") << ",\n";
         ss << "  \"genetic_mutated_count\": " << ncaMutatedCount.load() << ",\n";
@@ -467,6 +475,12 @@ private:
                 extractJsonFloat(body, "scale", scale);
                 extractJsonFloat(body, "rate", rate);
 
+                if (action == "mutate_everything" || action == "everything" || target == "everything") {
+                    action = "mutate";
+                    target = "everything";
+                    rate = 1.0f;
+                }
+
                 m_config.requestGenetic(action, target, scale, rate);
                 std::this_thread::sleep_for(std::chrono::milliseconds(25));
             }
@@ -496,6 +510,27 @@ private:
                     if (topStr == "polar") m_config.ncaTopology.store(1.0f);
                     else if (topStr == "cartesian") m_config.ncaTopology.store(0.0f);
                     else if (topStr == "spiral" || topStr == "vortex") m_config.ncaTopology.store(0.5f);
+                }
+
+                bool revPole = false;
+                if (extractJsonBool(body, "reverse_pole", revPole)) {
+                    m_config.ncaReversePole.store(revPole);
+                    m_config.ncaPoleRadial.store(revPole ? -1.0f : 1.0f);
+                }
+                bool revSpin = false;
+                if (extractJsonBool(body, "reverse_spin", revSpin)) {
+                    m_config.ncaReverseSpin.store(revSpin);
+                    m_config.ncaPoleAzimuthal.store(revSpin ? -1.0f : 1.0f);
+                }
+                float radVal;
+                if (extractJsonFloat(body, "nca_pole_radial", radVal)) {
+                    m_config.ncaPoleRadial.store(radVal);
+                    m_config.ncaReversePole.store(radVal < 0.0f);
+                }
+                float azimVal;
+                if (extractJsonFloat(body, "nca_pole_azimuthal", azimVal)) {
+                    m_config.ncaPoleAzimuthal.store(azimVal);
+                    m_config.ncaReverseSpin.store(azimVal < 0.0f);
                 }
             }
             std::string resBody = m_config.toJson();
@@ -621,6 +656,22 @@ private:
                 else if (strVal == "cartesian") m_config.ncaTopology.store(0.0f);
                 else if (strVal == "spiral" || strVal == "vortex") m_config.ncaTopology.store(0.5f);
             }
+            if (extractJsonBool(body, "reverse_pole", boolVal)) {
+                m_config.ncaReversePole.store(boolVal);
+                m_config.ncaPoleRadial.store(boolVal ? -1.0f : 1.0f);
+            }
+            if (extractJsonBool(body, "reverse_spin", boolVal)) {
+                m_config.ncaReverseSpin.store(boolVal);
+                m_config.ncaPoleAzimuthal.store(boolVal ? -1.0f : 1.0f);
+            }
+            if (extractJsonFloat(body, "nca_pole_radial", val)) {
+                m_config.ncaPoleRadial.store(val);
+                m_config.ncaReversePole.store(val < 0.0f);
+            }
+            if (extractJsonFloat(body, "nca_pole_azimuthal", val)) {
+                m_config.ncaPoleAzimuthal.store(val);
+                m_config.ncaReverseSpin.store(val < 0.0f);
+            }
             if (extractJsonString(body, "genetic_action", strVal)) {
                 std::string target = "all";
                 float scale = 0.15f;
@@ -628,6 +679,11 @@ private:
                 extractJsonString(body, "genetic_target", target);
                 extractJsonFloat(body, "genetic_scale", scale);
                 extractJsonFloat(body, "genetic_rate", rate);
+                if (strVal == "mutate_everything" || target == "everything") {
+                    strVal = "mutate";
+                    target = "everything";
+                    rate = 1.0f;
+                }
                 m_config.requestGenetic(strVal, target, scale, rate);
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
@@ -897,7 +953,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       </div>
     </div>
 
-    <!-- NCA Topology: Cartesian vs Polar (Rotated Sobel Filters) -->
+    <!-- NCA Topology: Cartesian vs Polar (Rotated Sobel Filters) with Reverse Pole options -->
     <div class="section">
       <div class="section-head">
         <span class="section-title">NCA Topology</span>
@@ -906,12 +962,23 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       <div class="btn-row">
         <button class="btn active" id="topoBtnCart" onclick="setTopology(0.0)">Cartesian</button>
         <button class="btn" id="topoBtnSpiral" onclick="setTopology(0.5)">Spiral / Vortex</button>
-        <button class="btn" id="topoBtnPolar" onclick="setTopology(1.0)">Polar (Pole Center)</button>
+        <button class="btn" id="topoBtnPolar" onclick="setTopology(1.0)">Polar (Center)</button>
       </div>
       <input type="range" id="topologySlider" min="0.0" max="1.0" step="0.02" value="0.0">
+      
+      <!-- Reverse Pole options -->
+      <div class="btn-row" style="margin-top:2px;">
+        <button class="toggle-btn" id="reversePoleBtn" style="flex:1;" onclick="toggleReversePole()" title="Reverse radial pole direction (inward vs outward)">
+          🔄 Reverse Pole: Outward
+        </button>
+        <button class="toggle-btn" id="reverseSpinBtn" style="flex:1;" onclick="toggleReverseSpin()" title="Reverse azimuthal rotation (CW vs CCW)">
+          🔃 Spin: CCW
+        </button>
+      </div>
+
       <div class="meta-row">
         <span>Sobel Filter Field:</span>
-        <span id="topologyDesc">Cartesian ∇x, ∇y</span>
+        <span id="topologyDesc">Cartesian ∇x, ∇y (Original)</span>
       </div>
     </div>
 
@@ -968,7 +1035,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       </div>
     </div>
 
-    <!-- Human-Assisted Genetic Evolution -->
+    <!-- Human-Assisted Genetic Evolution with Mutate Everything -->
     <div class="section">
       <div class="section-head">
         <span class="section-title">Genetic Algorithm</span>
@@ -983,8 +1050,9 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       <!-- Target subsystem selector -->
       <div style="display:flex; flex-direction:column; gap:3px;">
         <div class="meta-row"><span>Target Subsystem</span><span id="targetNameLabel">All (588)</span></div>
-        <div class="btn-row">
+        <div class="btn-row" style="flex-wrap:wrap;">
           <button class="btn active" id="targetBtnAll" onclick="setGeneticTarget('all')">All</button>
+          <button class="btn" id="targetBtnEverything" onclick="setGeneticTarget('everything')" title="Mutate 100% of all 588 weights and biases">💥 Everything (100%)</button>
           <button class="btn" id="targetBtnPercep" onclick="setGeneticTarget('perception')">Perception</button>
           <button class="btn" id="targetBtnState" onclick="setGeneticTarget('state')">State</button>
           <button class="btn" id="targetBtnNonlin" onclick="setGeneticTarget('nonlinear')">Nonlinear</button>
@@ -997,16 +1065,17 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         <div class="meta-row"><span>Mutation Scale</span><span id="mutScaleVal">0.15</span></div>
         <input type="range" id="mutScaleSlider" min="0.02" max="0.50" step="0.01" value="0.15">
       </div>
-      <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
+      <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;" id="mutRateRow">
         <div class="meta-row"><span>Mutation Rate</span><span id="mutRateVal">25%</span></div>
-        <input type="range" id="mutRateSlider" min="0.05" max="0.60" step="0.05" value="0.25">
+        <input type="range" id="mutRateSlider" min="0.05" max="1.00" step="0.05" value="0.25">
       </div>
 
       <!-- Genetic Actions -->
       <div class="btn-row" style="margin-top:4px;">
-        <button class="toggle-btn" style="flex:2;" onclick="mutateCandidate()">🎲 Mutate Candidate</button>
-        <button class="btn" id="cancelBtn" style="flex:1; border-color:#ff4466; color:#ff7788;" onclick="cancelCandidate()" title="Cancel candidate and revert to baseline">❌ Cancel</button>
-        <button class="btn" id="reinforceBtn" style="flex:1.2; border-color:var(--accent); color:var(--accent); font-weight:700;" onclick="reinforceCandidate()" title="Lock-in candidate as next generation">✨ Reinforce</button>
+        <button class="toggle-btn" style="flex:1.2;" onclick="mutateCandidate()">🎲 Mutate</button>
+        <button class="toggle-btn active" style="flex:1.6; border-color:#ffbb00; color:#ffcc33;" onclick="mutateEverything()" title="Mutate 100% of all weights and biases">💥 Mutate Everything</button>
+        <button class="btn" id="cancelBtn" style="flex:0.8; border-color:#ff4466; color:#ff7788;" onclick="cancelCandidate()" title="Cancel candidate and revert to baseline">❌ Cancel</button>
+        <button class="btn" id="reinforceBtn" style="flex:1.0; border-color:var(--accent); color:var(--accent); font-weight:700;" onclick="reinforceCandidate()" title="Lock-in candidate as next generation">✨ Reinforce</button>
       </div>
 
       <div class="btn-row">
@@ -1021,21 +1090,25 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       </div>
     </div>
 
-    <!-- Structure Imprint (Easter Egg) -->
+    <!-- Structure Imprint (Giant Full-Screen Easter Egg) -->
     <div class="section">
       <div class="section-head">
-        <span class="section-title">Structure Imprint (Easter Egg)</span>
+        <span class="section-title">Giant Structure Imprint (Easter Egg)</span>
         <span id="imprintFeedback" class="val" style="color:var(--accent-cyan); font-size:0.75rem;">Ready</span>
       </div>
       <div style="display:flex; gap:8px;">
-        <input type="text" id="imprintInput" maxlength="32" placeholder="Arbitrary message..." value="BYOB" style="flex:1;">
-        <button class="toggle-btn active" onclick="triggerImprint()" style="white-space:nowrap;">🌟 Imprint</button>
+        <input type="text" id="imprintInput" maxlength="40" placeholder="Arbitrary message..." value="BYOB" style="flex:1;">
+        <button class="toggle-btn active" onclick="triggerImprint()" style="white-space:nowrap;">🌟 Imprint Giant</button>
       </div>
       <div class="btn-row">
         <button class="btn" onclick="setImprintText('BYOB')">BYOB</button>
         <button class="btn" onclick="setImprintText('ANTIGRAVITY')">ANTIGRAVITY</button>
         <button class="btn" onclick="setImprintText('POLAR LIFE')">POLAR LIFE</button>
         <button class="btn" onclick="setImprintText('CELLULAR')">CELLULAR</button>
+      </div>
+      <div class="meta-row">
+        <span>Rasterizer: Full-Screen Adaptive 8x8 Bitmap</span>
+        <span>Auto Centered</span>
       </div>
     </div>
 
@@ -1056,13 +1129,16 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       auto_gain: 1.0,
       nca_topology: 0.0,
       topology: "cartesian",
+      nca_pole_radial: 1.0,
+      nca_pole_azimuthal: 1.0,
+      reverse_pole: false,
+      reverse_spin: false,
       nca_step_scale: 1.0,
       genetic_generation: 0,
       genetic_has_candidate: false,
       genetic_mutated_count: 0,
       genetic_mutation_scale: 0.15,
       genetic_mutation_rate: 0.25,
-      // Retain for compatibility
       nca_perturb: 0.0,
       nca_seed: 0.0,
       waveform_mode: 0
@@ -1102,6 +1178,8 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 
     const autoSpeedBtn = document.getElementById('autoSpeedBtn');
     const autoFreqBtn = document.getElementById('autoFreqBtn');
+    const reversePoleBtn = document.getElementById('reversePoleBtn');
+    const reverseSpinBtn = document.getElementById('reverseSpinBtn');
     const cancelBtn = document.getElementById('cancelBtn');
     const reinforceBtn = document.getElementById('reinforceBtn');
 
@@ -1120,19 +1198,29 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       // Topology
       const topVal = parseFloat(s.nca_topology || 0.0);
       topologySlider.value = topVal;
+      const revPole = !!s.reverse_pole || (s.nca_pole_radial < 0);
+      const revSpin = !!s.reverse_spin || (s.nca_pole_azimuthal < 0);
+
       if (topVal <= 0.05) {
         topologyLabel.innerText = 'Cartesian (0.0)';
-        topologyDesc.innerText = 'Cartesian ∇x, ∇y';
+        topologyDesc.innerText = 'Cartesian ∇x, ∇y (Original byob)';
       } else if (topVal >= 0.95) {
-        topologyLabel.innerText = 'Polar (1.0)';
-        topologyDesc.innerText = 'Radial ∇r, Azimuthal ∇θ';
+        topologyLabel.innerText = revPole ? 'Polar (Inward Pole)' : 'Polar (Outward Pole)';
+        topologyDesc.innerText = revPole ? 'Inward Sink ∇r, Azimuthal ∇θ' : 'Outward Source ∇r, Azimuthal ∇θ';
       } else {
         topologyLabel.innerText = 'Spiral (' + topVal.toFixed(2) + ')';
         topologyDesc.innerText = 'Rotated Sobel Field (' + Math.round(topVal * 90) + '°)';
       }
+
       document.getElementById('topoBtnCart').classList.toggle('active', topVal <= 0.1);
       document.getElementById('topoBtnSpiral').classList.toggle('active', topVal > 0.1 && topVal < 0.9);
       document.getElementById('topoBtnPolar').classList.toggle('active', topVal >= 0.9);
+
+      reversePoleBtn.innerText = revPole ? '🔄 Reverse Pole: Inward' : '🔄 Reverse Pole: Outward';
+      reversePoleBtn.classList.toggle('active', revPole);
+
+      reverseSpinBtn.innerText = revSpin ? '🔃 Spin: CW (Rev)' : '🔃 Spin: CCW';
+      reverseSpinBtn.classList.toggle('active', revSpin);
 
       // Genetic Algorithm state
       geneticGenLabel.innerText = 'Gen: ' + (s.genetic_generation !== undefined ? s.genetic_generation : 0);
@@ -1206,6 +1294,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           rhythm_division: parseInt(state.rhythm_division),
           auto_freq: !!state.auto_freq,
           nca_topology: parseFloat(state.nca_topology),
+          nca_pole_radial: parseFloat(state.nca_pole_radial),
+          nca_pole_azimuthal: parseFloat(state.nca_pole_azimuthal),
+          reverse_pole: !!state.reverse_pole,
+          reverse_spin: !!state.reverse_spin,
           nca_step_scale: parseFloat(state.nca_step_scale),
           nca_perturb: parseFloat(state.nca_perturb || 0.0),
           nca_seed: parseFloat(state.nca_seed || 0.0)
@@ -1315,6 +1407,20 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       sendControls();
     }
 
+    function toggleReversePole() {
+      state.reverse_pole = !state.reverse_pole;
+      state.nca_pole_radial = state.reverse_pole ? -1.0 : 1.0;
+      updateUI(state);
+      sendControls();
+    }
+
+    function toggleReverseSpin() {
+      state.reverse_spin = !state.reverse_spin;
+      state.nca_pole_azimuthal = state.reverse_spin ? -1.0 : 1.0;
+      updateUI(state);
+      sendControls();
+    }
+
     function setDecay(v) {
       decaySlider.value = v;
       state.decay_time = v;
@@ -1352,6 +1458,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       geneticTarget = tgt;
       const names = {
         all: "All (588)",
+        everything: "💥 Everything (100%)",
         perception: "Perception (Sobel/Lap)",
         state: "State Recurrence",
         nonlinear: "Nonlinear (|xs|, |ps|)",
@@ -1359,10 +1466,16 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       };
       targetNameLabel.innerText = names[tgt] || tgt;
       document.getElementById('targetBtnAll').classList.toggle('active', tgt === 'all');
+      document.getElementById('targetBtnEverything').classList.toggle('active', tgt === 'everything');
       document.getElementById('targetBtnPercep').classList.toggle('active', tgt === 'perception');
       document.getElementById('targetBtnState').classList.toggle('active', tgt === 'state');
       document.getElementById('targetBtnNonlin').classList.toggle('active', tgt === 'nonlinear');
       document.getElementById('targetBtnBias').classList.toggle('active', tgt === 'biases');
+      if (tgt === 'everything') {
+        state.genetic_mutation_rate = 1.0;
+        mutRateSlider.value = 1.0;
+        mutRateVal.innerText = '100%';
+      }
     }
 
     async function mutateCandidate() {
@@ -1375,6 +1488,26 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
             target: geneticTarget,
             scale: parseFloat(state.genetic_mutation_scale),
             rate: parseFloat(state.genetic_mutation_rate)
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {}
+    }
+
+    async function mutateEverything() {
+      try {
+        const res = await fetch('/api/genetic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'mutate_everything',
+            target: 'everything',
+            scale: parseFloat(state.genetic_mutation_scale),
+            rate: 1.0
           })
         });
         if (res.ok) {
@@ -1445,7 +1578,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       } catch (e) {}
     }
 
-    // --- Easter Egg Structure Imprint ---
+    // --- Giant Easter Egg Structure Imprint ---
     function setImprintText(txt) {
       imprintInput.value = txt;
     }
@@ -1461,7 +1594,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         });
         if (res.ok) {
           imprintFeedback.innerText = "Imprinted: " + msg;
-          setTimeout(() => { imprintFeedback.innerText = "Ready"; }, 3000);
+          setTimeout(() => { imprintFeedback.innerText = "Ready"; }, 3500);
         }
       } catch (e) {
         imprintFeedback.innerText = "Error";

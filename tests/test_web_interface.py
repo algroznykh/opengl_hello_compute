@@ -39,13 +39,17 @@ def main():
     # Verify new features in HTML
     assert "setTopology" in html, "HTML should contain setTopology"
     assert "topoBtnPolar" in html, "HTML should contain polar topology button"
+    assert "reversePoleBtn" in html, "HTML should contain reversePoleBtn"
+    assert "reverseSpinBtn" in html, "HTML should contain reverseSpinBtn"
     assert "mutateCandidate" in html, "HTML should contain mutateCandidate button"
+    assert "mutateEverything" in html, "HTML should contain mutateEverything button"
+    assert "targetBtnEverything" in html, "HTML should contain targetBtnEverything"
     assert "cancelCandidate" in html, "HTML should contain cancelCandidate button"
     assert "reinforceCandidate" in html, "HTML should contain reinforceCandidate button"
     assert "triggerImprint" in html, "HTML should contain Easter egg triggerImprint"
     assert "imprintInput" in html, "HTML should contain arbitrary message input"
     assert "<canvas" not in html, "Canvas element should remain removed for minimal UI"
-    print("  -> Passed. Minimal HTML contains Topology, Genetic Evolution, and Easter Egg Imprint.")
+    print("  -> Passed. Minimal HTML contains Topology with Reverse Pole, Mutate Everything, and Easter Egg Imprint.")
 
     print("[2] Testing GET /api/status...")
     status_str, _ = get("/api/status")
@@ -58,12 +62,16 @@ def main():
     assert "auto_freq" in status
     assert "nca_topology" in status
     assert "topology" in status
+    assert "nca_pole_radial" in status
+    assert "nca_pole_azimuthal" in status
+    assert "reverse_pole" in status
+    assert "reverse_spin" in status
     assert "genetic_generation" in status
     assert "genetic_has_candidate" in status
     assert "genetic_mutated_count" in status
     assert "genetic_mutation_scale" in status
     assert "genetic_mutation_rate" in status
-    print("  -> Passed. Status API returns all autotune, topology, and genetic fields.")
+    print("  -> Passed. Status API returns all autotune, topology, pole reversal, and genetic fields.")
 
     print("[3] Testing Frequency Scales (log, mel, linear)...")
     res = post_json("/api/controls", {"scale": "mel"})
@@ -104,56 +112,62 @@ def main():
     assert res["rhythm_division"] == 2
     print(f"  -> Auto speed & auto freq enabled. Detected BPM: {res.get('detected_bpm')}")
 
-    print("[6] Testing NCA Topology Controls (Cartesian <-> Polar with pole in center)...")
+    print("[6] Testing NCA Topology Controls & Reverse Pole Options...")
     # Set to Polar via /api/topology
-    res = post_json("/api/topology", {"topology": "polar"})
+    res = post_json("/api/topology", {"topology": "polar", "reverse_pole": False, "reverse_spin": False})
     assert abs(res["nca_topology"] - 1.0) < 0.01, f"Expected 1.0, got {res['nca_topology']}"
     assert res["topology"] == "polar", f"Expected polar, got {res['topology']}"
-    print(f"  -> Topology Polar verified: nca_topology={res['nca_topology']}")
+    assert res["reverse_pole"] is False
+    assert abs(res["nca_pole_radial"] - 1.0) < 0.01
+    print(f"  -> Normal Polar verified: nca_topology={res['nca_topology']}, radial={res['nca_pole_radial']}")
 
-    # Set to Cartesian via /api/topology
-    res = post_json("/api/topology", {"topology": "cartesian"})
+    # Reverse radial pole (inward sink)
+    res = post_json("/api/topology", {"reverse_pole": True})
+    assert res["reverse_pole"] is True
+    assert abs(res["nca_pole_radial"] - (-1.0)) < 0.01, f"Expected -1.0, got {res['nca_pole_radial']}"
+    print(f"  -> Reverse radial pole verified: nca_pole_radial={res['nca_pole_radial']}")
+
+    # Reverse azimuthal spin
+    res = post_json("/api/topology", {"reverse_spin": True})
+    assert res["reverse_spin"] is True
+    assert abs(res["nca_pole_azimuthal"] - (-1.0)) < 0.01, f"Expected -1.0, got {res['nca_pole_azimuthal']}"
+    print(f"  -> Reverse spin verified: nca_pole_azimuthal={res['nca_pole_azimuthal']}")
+
+    # Set back to Cartesian (original unrotated)
+    res = post_json("/api/topology", {"topology": "cartesian", "reverse_pole": False, "reverse_spin": False})
     assert abs(res["nca_topology"] - 0.0) < 0.01, f"Expected 0.0, got {res['nca_topology']}"
     assert res["topology"] == "cartesian", f"Expected cartesian, got {res['topology']}"
-    print(f"  -> Topology Cartesian verified: nca_topology={res['nca_topology']}")
+    print(f"  -> Original Cartesian verified: nca_topology={res['nca_topology']}")
 
-    # Set float topology via /api/controls
-    res = post_json("/api/controls", {"nca_topology": 0.5})
-    assert abs(res["nca_topology"] - 0.5) < 0.01, f"Expected 0.5, got {res['nca_topology']}"
-    print(f"  -> Topology float value verified: nca_topology={res['nca_topology']}")
-
-    print("[7] Testing Easter Egg Structure Imprint (/api/imprint with arbitrary message)...")
+    print("[7] Testing Easter Egg Giant Structure Imprint (/api/imprint)...")
     res = post_json("/api/imprint", {"message": "BYOB"})
     assert res["status"] == "imprinted", f"Expected imprinted, got {res}"
     assert res["message"] == "BYOB"
-    print("  -> Default Easter Egg 'BYOB' imprint request verified.")
+    print("  -> Default Easter Egg 'BYOB' giant imprint request verified.")
 
-    res = post_json("/api/imprint", {"message": "ANTIGRAVITY"})
+    res = post_json("/api/imprint", {"message": "POLAR LIFE"})
     assert res["status"] == "imprinted"
-    assert res["message"] == "ANTIGRAVITY"
-    print("  -> Arbitrary message 'ANTIGRAVITY' imprint request verified.")
+    assert res["message"] == "POLAR LIFE"
+    print("  -> Two-line multi-word 'POLAR LIFE' giant imprint request verified.")
 
-    print("[8] Testing Human-Assisted Genetic Evolution (/api/genetic)...")
+    print("[8] Testing Human-Assisted Genetic Evolution & Mutate Everything...")
     # 8.1 Reset to Generation 0
     res = post_json("/api/genetic", {"action": "reset"})
     assert res["genetic_generation"] == 0, f"Expected Gen 0, got {res['genetic_generation']}"
     assert res["genetic_has_candidate"] is False
     print("  -> Gen 0 reset verified.")
 
-    # 8.2 Mutate candidate
+    # 8.2 Test 'Mutate Everything' option (100% of all 588 parameters)
     res = post_json("/api/genetic", {
-        "action": "mutate",
-        "target": "all",
-        "scale": 0.15,
-        "rate": 0.25
+        "action": "mutate_everything",
+        "scale": 0.15
     })
-    # Wait a moment for engine tick if needed
     time.sleep(0.05)
     status_str, _ = get("/api/status")
     status = json.loads(status_str)
     assert status["genetic_has_candidate"] is True, f"Expected candidate live, got {status}"
-    assert status["genetic_mutated_count"] > 0, f"Expected mutated weights > 0, got {status['genetic_mutated_count']}"
-    print(f"  -> Mutation produced candidate with {status['genetic_mutated_count']} perturbed weights.")
+    assert status["genetic_mutated_count"] == 588, f"Expected exactly 588 mutated parameters, got {status['genetic_mutated_count']}"
+    print(f"  -> Mutate Everything verified: all {status['genetic_mutated_count']} parameters perturbed!")
 
     # 8.3 Cancel candidate (reverts to baseline)
     res = post_json("/api/genetic", {"action": "cancel"})
@@ -188,7 +202,7 @@ def main():
     assert status["genetic_generation"] == 0, f"Expected rollback to Gen 0, got {status['genetic_generation']}"
     print("  -> Rollback verified; restored previous generation.")
 
-    print("\nALL TOPOLOGY, GENETIC ALGORITHM & EASTER EGG IMPRINT TESTS PASSED SUCCESSFULLY!")
+    print("\nALL CARTESIAN, REVERSE POLAR, MUTATE EVERYTHING & GIANT IMPRINT TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     main()

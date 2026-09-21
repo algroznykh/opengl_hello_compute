@@ -136,6 +136,7 @@ public:
         int count = 0;
         float effScale = std::max(0.01f, std::min(1.0f, scale));
         float effRate = std::max(0.01f, std::min(1.0f, rate));
+        bool isEverything = (target == "everything" || target == "all_100");
 
         // Rows in W:
         // 0..11: xs (state recurrence)
@@ -145,7 +146,7 @@ public:
 
         for (int row = 0; row < 48; row++) {
             bool targetRow = false;
-            if (target == "all") {
+            if (isEverything || target == "all") {
                 targetRow = true;
             } else if (target == "perception") {
                 targetRow = (row >= 12 && row < 24) || (row >= 36 && row < 48);
@@ -158,7 +159,7 @@ public:
             if (!targetRow) continue;
 
             for (int col = 0; col < 12; col++) {
-                if (probDist(rng) < effRate) {
+                if (isEverything || probDist(rng) < effRate) {
                     int idx = row * 12 + col;
                     float orig = candidate.W[idx];
                     float delta = normDist(rng) * (std::abs(orig) * effScale + 40.0f * effScale);
@@ -168,9 +169,9 @@ public:
             }
         }
 
-        if (target == "all" || target == "biases" || target == "bias") {
+        if (isEverything || target == "all" || target == "biases" || target == "bias") {
             for (int c = 0; c < 12; c++) {
-                if (probDist(rng) < effRate) {
+                if (isEverything || probDist(rng) < effRate) {
                     float orig = candidate.B[c];
                     float delta = normDist(rng) * (std::abs(orig) * effScale + 40.0f * effScale);
                     candidate.B[c] += delta;
@@ -241,62 +242,113 @@ void imprintTextMessage(const std::string& msg) {
         }
     }
     if (cleanMsg.empty()) cleanMsg = "BYOB";
-    if (cleanMsg.length() > 32) cleanMsg = cleanMsg.substr(0, 32);
+    if (cleanMsg.length() > 40) cleanMsg = cleanMsg.substr(0, 40);
 
-    int charScale = std::max(2, std::min(8, (int)(TEXTURE_WIDTH / ((int)cleanMsg.length() * 10 + 20))));
-    int charWidth = 8 * charScale;
-    int charHeight = 8 * charScale;
-    int spacing = 2 * charScale;
-    int totalWidth = (int)cleanMsg.length() * charWidth + (int)(cleanMsg.length() - 1) * spacing;
-    int totalHeight = charHeight;
+    // Smart line splitting: test if 2 lines gives even bigger glyphs for phrases with spaces
+    std::vector<std::string> lines;
+    size_t spacePos = cleanMsg.find(' ');
+    if (cleanMsg.length() > 5 && spacePos != std::string::npos && spacePos > 1 && spacePos < cleanMsg.length() - 2) {
+        std::string l1 = cleanMsg.substr(0, spacePos);
+        std::string l2 = cleanMsg.substr(spacePos + 1);
+        int u1 = (int)cleanMsg.length() * 8 + (int)(cleanMsg.length() - 1) * 2;
+        int s1 = std::min((int)((TEXTURE_WIDTH * 0.95f) / std::max(1, u1)), (int)((TEXTURE_HEIGHT * 0.88f) / 8));
 
-    int startX = (TEXTURE_WIDTH - totalWidth) / 2;
-    int startY = (TEXTURE_HEIGHT - totalHeight) / 2;
+        int maxLu = std::max((int)l1.length(), (int)l2.length()) * 8 + (std::max((int)l1.length(), (int)l2.length()) - 1) * 2;
+        int hUnits = 8 * 2 + 3; // 2 lines
+        int s2 = std::min((int)((TEXTURE_WIDTH * 0.95f) / std::max(1, maxLu)), (int)((TEXTURE_HEIGHT * 0.88f) / hUnits));
 
-    if (startX < 0) startX = 0;
+        if (s2 > s1) {
+            lines.push_back(l1);
+            lines.push_back(l2);
+        } else {
+            lines.push_back(cleanMsg);
+        }
+    } else {
+        lines.push_back(cleanMsg);
+    }
+
+    int maxLineChars = 0;
+    for (const auto& l : lines) {
+        if ((int)l.length() > maxLineChars) maxLineChars = (int)l.length();
+    }
+
+    const int charUnits = 8;
+    const int spacingUnits = 2;
+    int lineUnitsW = maxLineChars * charUnits + (maxLineChars - 1) * spacingUnits;
+    int numLines = (int)lines.size();
+    int lineUnitsH = numLines * charUnits + (numLines - 1) * 3;
+
+    // Maximum charScale that fills 95% width and 90% height
+    int maxScaleW = (int)((TEXTURE_WIDTH * 0.95f) / std::max(1, lineUnitsW));
+    int maxScaleH = (int)((TEXTURE_HEIGHT * 0.90f) / std::max(1, lineUnitsH));
+    int charScale = std::max(3, std::min(maxScaleW, maxScaleH));
+
+    int charWidth = charUnits * charScale;
+    int charHeight = charUnits * charScale;
+    int charSpacing = spacingUnits * charScale;
+    int lineSpacing = 3 * charScale;
+
+    int totalH = numLines * charHeight + (numLines - 1) * lineSpacing;
+    int startY = (TEXTURE_HEIGHT - totalH) / 2;
     if (startY < 0) startY = 0;
-    if (startX + totalWidth > (int)TEXTURE_WIDTH) totalWidth = TEXTURE_WIDTH - startX;
-    if (startY + totalHeight > (int)TEXTURE_HEIGHT) totalHeight = TEXTURE_HEIGHT - startY;
 
-    std::vector<float> patch(totalWidth * totalHeight * 4, 0.0f);
+    // Clear entire backbuffer texture so previous smaller imprint doesn't ghost
+    std::vector<float> emptyBack(TEXTURE_WIDTH * TEXTURE_HEIGHT * 4, 0.0f);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, backbufferTexture);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, TEXTURE_WIDTH, TEXTURE_HEIGHT, GL_RGBA, GL_FLOAT, emptyBack.data());
 
-    for (size_t ci = 0; ci < cleanMsg.length(); ci++) {
-        uint8_t ascii = (uint8_t)cleanMsg[ci];
-        int glyphIdx = ascii - 32;
-        int glyphStartX = (int)ci * (charWidth + spacing);
+    for (int li = 0; li < numLines; li++) {
+        const std::string& lineText = lines[li];
+        int lineLen = (int)lineText.length();
+        int lineTotalW = lineLen * charWidth + (lineLen - 1) * charSpacing;
+        int startX = (TEXTURE_WIDTH - lineTotalW) / 2;
+        if (startX < 0) startX = 0;
+        if (startX + lineTotalW > (int)TEXTURE_WIDTH) lineTotalW = TEXTURE_WIDTH - startX;
 
-        for (int r = 0; r < 8; r++) {
-            uint8_t rowBits = FONT8X8[glyphIdx][r];
-            int flippedR = 7 - r;
+        int lineY = startY + (numLines - 1 - li) * (charHeight + lineSpacing);
+        int clampedH = std::min(charHeight, (int)TEXTURE_HEIGHT - lineY);
+        if (clampedH <= 0) continue;
 
-            for (int c = 0; c < 8; c++) {
-                if ((rowBits >> (7 - c)) & 1) {
-                    for (int dy = 0; dy < charScale; dy++) {
-                        int py = flippedR * charScale + dy;
-                        if (py >= totalHeight) continue;
+        std::vector<float> patch(lineTotalW * clampedH * 4, 0.0f);
 
-                        for (int dx = 0; dx < charScale; dx++) {
-                            int px = glyphStartX + c * charScale + dx;
-                            if (px >= totalWidth) continue;
+        for (size_t ci = 0; ci < lineText.length(); ci++) {
+            uint8_t ascii = (uint8_t)lineText[ci];
+            int glyphIdx = ascii - 32;
+            if (glyphIdx < 0 || glyphIdx >= 95) continue;
+            int glyphStartX = (int)ci * (charWidth + charSpacing);
 
-                            int pixelIdx = (py * totalWidth + px) * 4;
-                            patch[pixelIdx + 0] = 1.6f;
-                            patch[pixelIdx + 1] = 0.5f;
-                            patch[pixelIdx + 2] = 2.4f;
-                            patch[pixelIdx + 3] = 1.0f;
+            for (int r = 0; r < 8; r++) {
+                uint8_t rowBits = FONT8X8[glyphIdx][r];
+                int flippedR = 7 - r;
+
+                for (int c = 0; c < 8; c++) {
+                    if ((rowBits >> (7 - c)) & 1) {
+                        for (int dy = 0; dy < charScale; dy++) {
+                            int py = flippedR * charScale + dy;
+                            if (py >= clampedH) continue;
+
+                            for (int dx = 0; dx < charScale; dx++) {
+                                int px = glyphStartX + c * charScale + dx;
+                                if (px >= lineTotalW) continue;
+
+                                int pixelIdx = (py * lineTotalW + px) * 4;
+                                patch[pixelIdx + 0] = 2.4f;
+                                patch[pixelIdx + 1] = 0.6f;
+                                patch[pixelIdx + 2] = 3.0f;
+                                patch[pixelIdx + 3] = 1.0f;
+                            }
                         }
                     }
                 }
             }
         }
+
+        glTexSubImage2D(GL_TEXTURE_2D, 0, startX, lineY, lineTotalW, clampedH, GL_RGBA, GL_FLOAT, patch.data());
     }
 
-    glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_2D, backbufferTexture);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, startX, startY, totalWidth, totalHeight, GL_RGBA, GL_FLOAT, patch.data());
-
-    std::cout << "[Easter Egg] Imprinted message: \"" << cleanMsg << "\" into backbuffer (" 
-              << totalWidth << "x" << totalHeight << " at " << startX << "," << startY << ")" << std::endl;
+    std::cout << "[Easter Egg] Giant imprint: \"" << cleanMsg << "\" (charScale=" << charScale 
+              << ", lines=" << numLines << ")" << std::endl;
 }
 
 unsigned int frameCounter;
@@ -1113,6 +1165,8 @@ int main(int argc, char* argv[]) {
             if (g_radarConfig.popPendingGenetic(genReq)) {
                 if (genReq.action == "mutate") {
                     g_geneticEngine.mutate(genReq.target, genReq.scale, genReq.rate);
+                } else if (genReq.action == "mutate_everything") {
+                    g_geneticEngine.mutate("everything", genReq.scale, 1.0f);
                 } else if (genReq.action == "cancel" || genReq.action == "revert") {
                     g_geneticEngine.cancel();
                 } else if (genReq.action == "reinforce" || genReq.action == "commit" || genReq.action == "keep") {
@@ -1145,6 +1199,8 @@ int main(int argc, char* argv[]) {
             currentComputeShader->setFloat("nca_seed", g_radarConfig.ncaSeed.load());
             currentComputeShader->setFloat("nca_step_scale", g_radarConfig.ncaStepScale.load());
             currentComputeShader->setFloat("nca_topology", g_radarConfig.ncaTopology.load());
+            currentComputeShader->setFloat("nca_pole_radial", g_radarConfig.ncaPoleRadial.load());
+            currentComputeShader->setFloat("nca_pole_azimuthal", g_radarConfig.ncaPoleAzimuthal.load());
             currentComputeShader->setFloat("waveform_mix", currentWaveformMix);
             
             // Update uniform buffer with frame counter and time
