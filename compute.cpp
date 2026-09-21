@@ -1369,6 +1369,22 @@ int main(int argc, char* argv[]) {
                 g_geneticEngine.dirty = false;
             }
 
+            // Channel auto-cycling logic
+            static float channelCycleTimer = 0.0f;
+            if (g_radarConfig.ncaAutoCycleChannels.load()) {
+                float cycleInterval = std::max(0.1f, g_radarConfig.ncaCycleInterval.load());
+                channelCycleTimer += deltaTime;
+                if (channelCycleTimer >= cycleInterval) {
+                    channelCycleTimer = 0.0f;
+                    int curChan = g_radarConfig.ncaChannelView.load();
+                    // Cycle through NCA channels 0 to 11
+                    int nextChan = (curChan < 0 || curChan >= 11) ? 0 : curChan + 1;
+                    g_radarConfig.ncaChannelView.store(nextChan);
+                }
+            } else {
+                channelCycleTimer = 0.0f;
+            }
+
             // Set radar shader controls from web interface
             currentComputeShader->setFloat("scan_phase", radarPhase);
             currentComputeShader->setFloat("scan_speed", curSpeed);
@@ -1378,6 +1394,7 @@ int main(int argc, char* argv[]) {
             currentComputeShader->setFloat("freq_max_hz", g_radarConfig.freqMaxHz.load());
             currentComputeShader->setInt("scale_type", g_radarConfig.scaleType.load());
             currentComputeShader->setFloat("spectrogram_influence", g_radarConfig.spectrogramInfluence.load());
+            currentComputeShader->setInt("nca_channel_view", g_radarConfig.ncaChannelView.load());
             currentComputeShader->setFloat("nca_perturb", g_radarConfig.ncaPerturb.load());
             currentComputeShader->setFloat("nca_seed", g_radarConfig.ncaSeed.load());
             currentComputeShader->setFloat("nca_step_scale", g_radarConfig.ncaStepScale.load());

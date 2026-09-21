@@ -23,6 +23,7 @@ uniform float nca_topology; // 0.0 = Cartesian, 1.0 = Polar (pole in center)
 uniform float nca_pole_radial;    // +1.0 = outward pole, -1.0 = reversed/inward pole
 uniform float nca_pole_azimuthal; // +1.0 = standard CCW spin, -1.0 = reversed CW spin
 uniform float spectrogram_influence; // Controls how much spectrogram affects NCA state & beam visibility (0.0 to 2.0)
+uniform int nca_channel_view;         // -1 = composite (normal), 0..11 = direct channel w/o color correction, 12 = raw RGB
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
@@ -518,30 +519,22 @@ void main() {
 
     // Output to screen
     float[12] states_out = get_xy(idxs, idys);
-    vec4 xrgb = vec4(states_out[3], states_out[0], states_out[3], states_out[3]);
-    
-
-    //xrgb *=  (length(xrgb) * .5 - pow(length(centered), 2.) ); 
-    // xrgb *= length(value) > 3.9 ? length(value) : 0.  ;
-    //xrgb = vec4(finalColor, 1.);
-
-    //xrgb -= (.8 - length(centered));
-
-    //xrgb *= tex * .;//* pow((1. - length(centered)), 1.) * 12.;
-
-    //xrgb = 1. -  vec4(finalColor, 1.) / 4.;
-
-    //xrgb *= (tex * (1. - radius)) + value ;
-    //xrgb *= 1. - radius;
-
-    //xrgb *= max(tex, cameraColor);
-    //xrgb += spectrum.xxxx;
-    //xrgb.r = fract(angle - time);
-    //xrgb = value;
-
-
-    xrgb.g *= .5555;
-    xrgb *= .9;
+    vec4 xrgb;
+    if (nca_channel_view >= 0 && nca_channel_view < 12) {
+        // Direct channel view w/o color correction (raw activation magnitude in grayscale)
+        float chVal = clamp(abs(states_out[nca_channel_view]), 0.0, 1.5);
+        xrgb = vec4(chVal, chVal, chVal, 1.0);
+    } else if (nca_channel_view == 12) {
+        // Direct raw RGB channels (0, 1, 2) w/o color correction
+        xrgb = vec4(clamp(abs(states_out[0]), 0.0, 1.5),
+                    clamp(abs(states_out[1]), 0.0, 1.5),
+                    clamp(abs(states_out[2]), 0.0, 1.5), 1.0);
+    } else {
+        // Default composite with color correction
+        xrgb = vec4(states_out[3], states_out[0], states_out[3], states_out[3]);
+        xrgb.g *= .5555;
+        xrgb *= .9;
+    }
     //xrgb = pow(xrgb, vec4(3.));
     imageStore(outputTexture, fragCoord, xrgb);
     // interpolation

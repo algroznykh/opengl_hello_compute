@@ -67,6 +67,11 @@ struct RadarConfig {
     std::atomic<float> spectrogramInfluence{1.0f};
     std::atomic<bool> resetStateRequested{false};
 
+    // Direct NCA Channel View (-1 = default composite, 0..11 = direct channel w/o color correction, 12 = raw RGB)
+    std::atomic<int> ncaChannelView{-1};
+    std::atomic<bool> ncaAutoCycleChannels{false};
+    std::atomic<float> ncaCycleInterval{1.5f};
+
     // Human-Assisted Genetic Algorithm state
     std::atomic<int> ncaGeneration{0};
     std::atomic<bool> ncaHasCandidate{false};
@@ -189,6 +194,9 @@ struct RadarConfig {
         ss << "  \"reverse_pole\": " << (ncaReversePole.load() ? "true" : "false") << ",\n";
         ss << "  \"reverse_spin\": " << (ncaReverseSpin.load() ? "true" : "false") << ",\n";
         ss << "  \"spectrogram_influence\": " << spectrogramInfluence.load() << ",\n";
+        ss << "  \"nca_channel_view\": " << ncaChannelView.load() << ",\n";
+        ss << "  \"nca_auto_cycle\": " << (ncaAutoCycleChannels.load() ? "true" : "false") << ",\n";
+        ss << "  \"nca_cycle_interval\": " << ncaCycleInterval.load() << ",\n";
         ss << "  \"genetic_generation\": " << ncaGeneration.load() << ",\n";
         ss << "  \"genetic_has_candidate\": " << (ncaHasCandidate.load() ? "true" : "false") << ",\n";
         ss << "  \"genetic_mutated_count\": " << ncaMutatedCount.load() << ",\n";
@@ -552,6 +560,41 @@ private:
             return;
         }
 
+        // Direct NCA Channel View and Auto-Cycling endpoint
+        if (cleanPath == "/api/channel" || cleanPath == "/api/channels") {
+            if (method == "POST") {
+                size_t bodyPos = request.find("\r\n\r\n");
+                std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
+                int chVal;
+                if (extractJsonInt(body, "channel", chVal) || extractJsonInt(body, "nca_channel_view", chVal)) {
+                    if (chVal >= -1 && chVal <= 12) {
+                        m_config.ncaChannelView.store(chVal);
+                    }
+                }
+                bool autoCycle;
+                if (extractJsonBool(body, "auto_cycle", autoCycle) || extractJsonBool(body, "nca_auto_cycle", autoCycle)) {
+                    m_config.ncaAutoCycleChannels.store(autoCycle);
+                }
+                float interval;
+                if (extractJsonFloat(body, "cycle_interval", interval) || extractJsonFloat(body, "nca_cycle_interval", interval)) {
+                    if (interval >= 0.1f && interval <= 60.0f) {
+                        m_config.ncaCycleInterval.store(interval);
+                    }
+                }
+            }
+            std::string resBody = m_config.toJson();
+            std::ostringstream response;
+            response << "HTTP/1.1 200 OK\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << resBody.length() << "\r\n"
+                     << cors
+                     << "Connection: close\r\n\r\n"
+                     << resBody;
+            std::string resStr = response.str();
+            send(clientFd, resStr.c_str(), resStr.length(), 0);
+            return;
+        }
+
         // NCA Topology endpoint
         if (cleanPath == "/api/topology") {
             if (method == "POST") {
@@ -751,6 +794,19 @@ private:
             }
             if (extractJsonString(body, "imprint_message", strVal)) {
                 m_config.requestImprint(strVal);
+            }
+            if (extractJsonInt(body, "nca_channel_view", intVal) || extractJsonInt(body, "channel", intVal)) {
+                if (intVal >= -1 && intVal <= 12) {
+                    m_config.ncaChannelView.store(intVal);
+                }
+            }
+            if (extractJsonBool(body, "nca_auto_cycle", boolVal) || extractJsonBool(body, "auto_cycle", boolVal)) {
+                m_config.ncaAutoCycleChannels.store(boolVal);
+            }
+            if (extractJsonFloat(body, "nca_cycle_interval", val) || extractJsonFloat(body, "cycle_interval", val)) {
+                if (val >= 0.1f && val <= 60.0f) {
+                    m_config.ncaCycleInterval.store(val);
+                }
             }
 
             std::string resBody = m_config.toJson();
@@ -1080,6 +1136,56 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       </div>
     </div>
 
+    <!-- NCA Channels (Direct View & Auto-Cycling w/o Color Correction) -->
+    <div class="section">
+      <div class="section-head">
+        <span class="section-title">NCA Channels</span>
+        <span id="channelViewLabel" class="val">Composite (CC)</span>
+      </div>
+
+      <!-- Auto-Cycle Toggle and Interval -->
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <button id="autoCycleChannelsBtn" class="toggle-btn" style="flex:1;" onclick="toggleAutoCycleChannels()" title="Automatically cycle sequentially through NCA channels 0 to 11">
+          🔄 Auto-Cycle Channels
+        </button>
+        <div style="display:flex; align-items:center; gap:5px;">
+          <span style="font-size:0.75rem; color:var(--text-dim);">Interval:</span>
+          <span id="cycleIntervalVal" class="val" style="font-size:0.75rem;">1.5s</span>
+        </div>
+      </div>
+      <input type="range" id="cycleIntervalSlider" min="0.2" max="5.0" step="0.1" value="1.5" oninput="setCycleInterval(this.value)">
+
+      <!-- Channel Selector Grid -->
+      <div class="btn-row">
+        <button class="btn active" id="chBtnComp" onclick="setNcaChannel(-1)" title="Standard composite output with purple/green color correction">Composite (CC)</button>
+        <button class="btn" id="chBtnRgb" onclick="setNcaChannel(12)" title="Direct RGB output from channels 0, 1, 2 w/o color correction">Raw RGB (0..2)</button>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn" id="chBtn0" onclick="setNcaChannel(0)" title="Channel 0 (Direct raw magnitude)">Ch 0</button>
+        <button class="btn" id="chBtn1" onclick="setNcaChannel(1)" title="Channel 1 (Direct raw magnitude)">Ch 1</button>
+        <button class="btn" id="chBtn2" onclick="setNcaChannel(2)" title="Channel 2 (Direct raw magnitude)">Ch 2</button>
+        <button class="btn" id="chBtn3" onclick="setNcaChannel(3)" title="Channel 3 (Direct raw magnitude)">Ch 3</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="chBtn4" onclick="setNcaChannel(4)" title="Channel 4 (Direct raw magnitude)">Ch 4</button>
+        <button class="btn" id="chBtn5" onclick="setNcaChannel(5)" title="Channel 5 (Direct raw magnitude)">Ch 5</button>
+        <button class="btn" id="chBtn6" onclick="setNcaChannel(6)" title="Channel 6 (Direct raw magnitude)">Ch 6</button>
+        <button class="btn" id="chBtn7" onclick="setNcaChannel(7)" title="Channel 7 (Direct raw magnitude)">Ch 7</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="chBtn8" onclick="setNcaChannel(8)" title="Channel 8 (Direct raw magnitude)">Ch 8</button>
+        <button class="btn" id="chBtn9" onclick="setNcaChannel(9)" title="Channel 9 (Direct raw magnitude)">Ch 9</button>
+        <button class="btn" id="chBtn10" onclick="setNcaChannel(10)" title="Channel 10 (Direct raw magnitude)">Ch 10</button>
+        <button class="btn" id="chBtn11" onclick="setNcaChannel(11)" title="Channel 11 (Direct raw magnitude)">Ch 11</button>
+      </div>
+
+      <div class="meta-row">
+        <span>Direct View:</span>
+        <span id="channelViewDesc">Grayscale activation magnitude (No Color Correction)</span>
+      </div>
+    </div>
+
     <!-- Decay Time -->
     <div class="section">
       <div class="section-head">
@@ -1156,7 +1262,6 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         <div class="meta-row"><span>Target Subsystem</span><span id="targetNameLabel">All (588)</span></div>
         <div class="btn-row" style="flex-wrap:wrap;">
           <button class="btn active" id="targetBtnAll" onclick="setGeneticTarget('all')">All</button>
-          <button class="btn" id="targetBtnEverything" onclick="setGeneticTarget('everything')" title="Mutate 100% of all 588 weights and biases">💥 Everything (100%)</button>
           <button class="btn" id="targetBtnPercep" onclick="setGeneticTarget('perception')">Perception</button>
           <button class="btn" id="targetBtnState" onclick="setGeneticTarget('state')">State</button>
           <button class="btn" id="targetBtnNonlin" onclick="setGeneticTarget('nonlinear')">Nonlinear</button>
@@ -1250,7 +1355,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       nca_wiring_events: 0,
       nca_perturb: 0.0,
       nca_seed: 0.0,
-      waveform_mode: 0
+      waveform_mode: 0,
+      nca_channel_view: -1,
+      nca_auto_cycle: false,
+      nca_cycle_interval: 1.5
     };
 
     let geneticTarget = "all";
@@ -1399,6 +1507,52 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         const btn = document.getElementById('divBtn' + i);
         if (btn) btn.classList.toggle('active', s.rhythm_division === i);
       }
+
+      // Direct NCA Channel View and Auto-Cycle
+      if (s.nca_channel_view !== undefined) {
+        state.nca_channel_view = parseInt(s.nca_channel_view);
+        const ch = state.nca_channel_view;
+        const chLabel = document.getElementById('channelViewLabel');
+        const chDesc = document.getElementById('channelViewDesc');
+        if (chLabel) {
+          if (ch === -1) {
+            chLabel.innerText = 'Composite (CC)';
+            if (chDesc) chDesc.innerText = 'Color corrected composite (Purple/Green)';
+          } else if (ch === 12) {
+            chLabel.innerText = 'Raw RGB (0..2)';
+            if (chDesc) chDesc.innerText = 'Raw RGB channels 0, 1, 2 (No Color Correction)';
+          } else {
+            chLabel.innerText = 'Channel ' + ch + ' (Direct)';
+            if (chDesc) chDesc.innerText = 'Channel ' + ch + ' magnitude |state| (No Color Correction)';
+          }
+        }
+        document.getElementById('chBtnComp')?.classList.toggle('active', ch === -1);
+        document.getElementById('chBtnRgb')?.classList.toggle('active', ch === 12);
+        for (let c = 0; c < 12; c++) {
+          document.getElementById('chBtn' + c)?.classList.toggle('active', ch === c);
+        }
+      }
+
+      if (s.nca_auto_cycle !== undefined) {
+        state.nca_auto_cycle = !!s.nca_auto_cycle;
+        const autoBtn = document.getElementById('autoCycleChannelsBtn');
+        if (autoBtn) {
+          autoBtn.classList.toggle('active', state.nca_auto_cycle);
+          autoBtn.innerText = state.nca_auto_cycle ? '🔄 Cycling (ON)' : '🔄 Auto-Cycle Channels';
+        }
+      }
+
+      if (s.nca_cycle_interval !== undefined) {
+        state.nca_cycle_interval = parseFloat(s.nca_cycle_interval);
+        const intervalVal = document.getElementById('cycleIntervalVal');
+        if (intervalVal) {
+          intervalVal.innerText = state.nca_cycle_interval.toFixed(1) + 's';
+        }
+        const intervalSlider = document.getElementById('cycleIntervalSlider');
+        if (intervalSlider && !intervalSlider.matches(':active')) {
+          intervalSlider.value = state.nca_cycle_interval;
+        }
+      }
     }
 
     function syncSliders() {
@@ -1411,6 +1565,8 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       ncaStepSlider.value = state.nca_step_scale;
       mutScaleSlider.value = state.genetic_mutation_scale;
       mutRateSlider.value = state.genetic_mutation_rate;
+      const cycleSlider = document.getElementById('cycleIntervalSlider');
+      if (cycleSlider) cycleSlider.value = state.nca_cycle_interval || 1.5;
       updateUI(state);
     }
 
@@ -1439,7 +1595,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           reverse_spin: !!state.reverse_spin,
           nca_step_scale: parseFloat(state.nca_step_scale),
           nca_perturb: parseFloat(state.nca_perturb || 0.0),
-          nca_seed: parseFloat(state.nca_seed || 0.0)
+          nca_seed: parseFloat(state.nca_seed || 0.0),
+          nca_channel_view: parseInt(state.nca_channel_view !== undefined ? state.nca_channel_view : -1),
+          nca_auto_cycle: !!state.nca_auto_cycle,
+          nca_cycle_interval: parseFloat(state.nca_cycle_interval || 1.5)
         };
         const res = await fetch('/api/controls', {
           method: 'POST',
@@ -1598,6 +1757,67 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       sendControls();
     }
 
+    // --- Direct NCA Channel View & Auto-Cycling Actions ---
+    async function setNcaChannel(ch) {
+      state.nca_channel_view = parseInt(ch);
+      state.nca_auto_cycle = false;
+      const autoBtn = document.getElementById('autoCycleChannelsBtn');
+      if (autoBtn) {
+        autoBtn.classList.remove('active');
+        autoBtn.innerText = '🔄 Auto-Cycle Channels';
+      }
+      try {
+        const res = await fetch('/api/channel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel: state.nca_channel_view,
+            auto_cycle: false
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {
+        sendControls();
+      }
+    }
+
+    async function toggleAutoCycleChannels() {
+      const nextVal = !state.nca_auto_cycle;
+      state.nca_auto_cycle = nextVal;
+      if (nextVal && state.nca_channel_view < 0) {
+        state.nca_channel_view = 0;
+      }
+      try {
+        const res = await fetch('/api/channel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            auto_cycle: nextVal,
+            channel: state.nca_channel_view,
+            cycle_interval: parseFloat(state.nca_cycle_interval || 1.5)
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {
+        sendControls();
+      }
+    }
+
+    function setCycleInterval(val) {
+      state.nca_cycle_interval = parseFloat(val);
+      const label = document.getElementById('cycleIntervalVal');
+      if (label) label.innerText = parseFloat(val).toFixed(1) + 's';
+      sendControls();
+    }
+
     // --- Genetic Algorithm Actions ---
     function setGeneticTarget(tgt) {
       geneticTarget = tgt;
@@ -1610,12 +1830,11 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         biases: "Biases (12)"
       };
       targetNameLabel.innerText = names[tgt] || tgt;
-      document.getElementById('targetBtnAll').classList.toggle('active', tgt === 'all');
-      document.getElementById('targetBtnEverything').classList.toggle('active', tgt === 'everything');
-      document.getElementById('targetBtnPercep').classList.toggle('active', tgt === 'perception');
-      document.getElementById('targetBtnState').classList.toggle('active', tgt === 'state');
-      document.getElementById('targetBtnNonlin').classList.toggle('active', tgt === 'nonlinear');
-      document.getElementById('targetBtnBias').classList.toggle('active', tgt === 'biases');
+      document.getElementById('targetBtnAll')?.classList.toggle('active', tgt === 'all');
+      document.getElementById('targetBtnPercep')?.classList.toggle('active', tgt === 'perception');
+      document.getElementById('targetBtnState')?.classList.toggle('active', tgt === 'state');
+      document.getElementById('targetBtnNonlin')?.classList.toggle('active', tgt === 'nonlinear');
+      document.getElementById('targetBtnBias')?.classList.toggle('active', tgt === 'biases');
       if (tgt === 'everything') {
         state.genetic_mutation_rate = 1.0;
         mutRateSlider.value = 1.0;
@@ -1823,7 +2042,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 
     syncSliders();
     pollStatus();
-    setInterval(pollStatus, 1200);
+    setInterval(pollStatus, 800);
   </script>
 </body>
 </html>

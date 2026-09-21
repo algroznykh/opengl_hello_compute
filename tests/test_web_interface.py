@@ -48,13 +48,18 @@ def main():
     assert "wiringBadge" in html, "HTML should contain neural wiringBadge"
     assert "mutateCandidate" in html, "HTML should contain mutateCandidate button"
     assert "mutateEverything" in html, "HTML should contain mutateEverything button"
-    assert "targetBtnEverything" in html, "HTML should contain targetBtnEverything"
+    assert "targetBtnEverything" not in html, "targetBtnEverything should be removed to de-duplicate mutate everything controls"
+    assert "setNcaChannel" in html, "HTML should contain setNcaChannel"
+    assert "toggleAutoCycleChannels" in html, "HTML should contain toggleAutoCycleChannels"
+    assert "autoCycleChannelsBtn" in html, "HTML should contain autoCycleChannelsBtn"
+    assert "chBtnComp" in html, "HTML should contain chBtnComp button"
+    assert "chBtn0" in html, "HTML should contain chBtn0 button"
     assert "cancelCandidate" in html, "HTML should contain cancelCandidate button"
     assert "reinforceCandidate" in html, "HTML should contain reinforceCandidate button"
     assert "triggerImprint" in html, "HTML should contain Easter egg triggerImprint"
     assert "imprintInput" in html, "HTML should contain arbitrary message input"
     assert "<canvas" not in html, "Canvas element should remain removed for minimal UI"
-    print("  -> Passed. Minimal HTML contains Spectrogram Influence, State Reset, Random Reset, Wiring, and Giant Imprint.")
+    print("  -> Passed. Minimal HTML contains Direct NCA Channels, Auto-Cycle, de-duplicated Mutate Everything.")
 
     print("[2] Testing GET /api/status...")
     status_str, _ = get("/api/status")
@@ -66,6 +71,9 @@ def main():
     assert "rhythm_division" in status
     assert "auto_freq" in status
     assert "spectrogram_influence" in status, "Status should contain spectrogram_influence"
+    assert "nca_channel_view" in status, "Status should contain nca_channel_view"
+    assert "nca_auto_cycle" in status, "Status should contain nca_auto_cycle"
+    assert "nca_cycle_interval" in status, "Status should contain nca_cycle_interval"
     assert "nca_topology" in status
     assert "topology" in status
     assert "nca_pole_radial" in status
@@ -292,7 +300,47 @@ def main():
     post_json("/api/genetic", {"action": "reset"})
     print("  -> Clean baseline restored.")
 
-    print("\nALL SPECTROGRAM INFLUENCE, STATE RESET, RANDOM RESET & SYNAPTIC WIRING TESTS PASSED SUCCESSFULLY!")
+    print("[13] Testing Direct NCA Channels View & Auto-Cycling...")
+    # Test setting individual channels 0..11 directly
+    for ch in [0, 3, 5, 8, 11]:
+        res = post_json("/api/channel", {"channel": ch})
+        assert res["nca_channel_view"] == ch, f"Expected channel {ch}, got {res['nca_channel_view']}"
+    print("  -> Direct channel selection (0, 3, 5, 8, 11) verified.")
+
+    # Test raw RGB mode (channel 12)
+    res = post_json("/api/channel", {"channel": 12})
+    assert res["nca_channel_view"] == 12, f"Expected channel 12, got {res['nca_channel_view']}"
+    print("  -> Raw RGB channels mode (12) verified.")
+
+    # Test returning to composite mode (-1)
+    res = post_json("/api/channel", {"channel": -1})
+    assert res["nca_channel_view"] == -1, f"Expected channel -1, got {res['nca_channel_view']}"
+    print("  -> Composite color-corrected mode (-1) verified.")
+
+    # Test channel control via /api/controls
+    res = post_json("/api/controls", {"nca_channel_view": 4})
+    assert res["nca_channel_view"] == 4, f"Expected channel 4 via /api/controls, got {res['nca_channel_view']}"
+    print("  -> Channel selection via /api/controls verified.")
+
+    # Test Auto-Cycle Channels toggle and cycle interval
+    res = post_json("/api/channel", {"auto_cycle": True, "cycle_interval": 0.5})
+    assert res["nca_auto_cycle"] is True, "Expected auto_cycle to be True"
+    assert abs(res["nca_cycle_interval"] - 0.5) < 0.01, f"Expected cycle_interval 0.5, got {res['nca_cycle_interval']}"
+    print("  -> Auto-cycling channels enabled with 0.5s interval.")
+
+    # Wait for auto-cycling to advance channel
+    time.sleep(1.2)
+    status = json.loads(get("/api/status")[0])
+    print(f"  -> Channel after cycling: {status['nca_channel_view']}")
+    assert status["nca_auto_cycle"] is True
+
+    # Disable auto-cycle and restore composite
+    res = post_json("/api/channel", {"auto_cycle": False, "channel": -1, "cycle_interval": 1.5})
+    assert res["nca_auto_cycle"] is False
+    assert res["nca_channel_view"] == -1
+    print("  -> Auto-cycle disabled and composite view restored.")
+
+    print("\nALL SPECTROGRAM INFLUENCE, STATE RESET, RANDOM RESET, SYNAPTIC WIRING & DIRECT CHANNELS TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     main()
