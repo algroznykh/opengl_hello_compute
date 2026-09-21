@@ -1319,14 +1319,14 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         <span id="rerollBadge" class="meta-row" style="margin:0; color:var(--accent); font-weight:600;">Active (0 rerolls)</span>
       </div>
       <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
-        <span style="font-size:0.75rem; color:var(--text-dim);">Viewport Dimming:</span>
-        <span id="dimStatusLabel" class="meta-row" style="margin:0; color:var(--accent-cyan); font-weight:600;">Active (100% Brightness)</span>
+        <span style="font-size:0.75rem; color:var(--text-dim);">State Dimming:</span>
+        <span id="dimStatusLabel" class="meta-row" style="margin:0; color:var(--accent-cyan); font-weight:600;">Active (100% Scale)</span>
       </div>
 
-      <!-- Auto-Reroll & Anti-Flicker Controls: Dim Viewport & Eased Criteria -->
+      <!-- Auto-Reroll & Anti-Flicker Controls: Dim State & Eased Criteria -->
       <div class="btn-row" style="margin-top:4px; gap:6px;">
-        <button id="dimRerollBtn" class="toggle-btn active" style="flex:1;" onclick="toggleDimOnReroll()" title="Smoothly dim viewport during re-roll settling to eliminate harsh flashing and flickering">
-          🌙 Dim on Re-roll (ON)
+        <button id="dimRerollBtn" class="toggle-btn active" style="flex:1;" onclick="toggleDimOnReroll()" title="Smoothly damp simulation state during candidate re-rolls to physically cool CA dynamics without dimming screen">
+          🌙 Dim State on Re-roll (ON)
         </button>
         <button id="criteriaBtn" class="toggle-btn active" style="flex:1;" onclick="toggleRerollCriteria()" title="Toggle between Eased (tolerant, whole-state) and Strict re-roll criteria">
           🛡️ Criteria: Eased
@@ -1586,7 +1586,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       if (dimBtn && s.nca_dim_on_reroll !== undefined) {
         state.nca_dim_on_reroll = !!s.nca_dim_on_reroll;
         dimBtn.classList.toggle('active', state.nca_dim_on_reroll);
-        dimBtn.innerText = state.nca_dim_on_reroll ? '🌙 Dim on Re-roll (ON)' : '🌙 Dim on Re-roll (OFF)';
+        dimBtn.innerText = state.nca_dim_on_reroll ? '🌙 Dim State on Re-roll (ON)' : '🌙 Dim State on Re-roll (OFF)';
       }
 
       const critBtn = document.getElementById('criteriaBtn');
@@ -1604,10 +1604,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           dimLabel.innerText = 'Disabled';
           dimLabel.style.color = 'var(--text-dim)';
         } else if (dimVal < 0.90) {
-          dimLabel.innerText = `Dimmed (${pct}% Brightness)`;
+          dimLabel.innerText = `Damped (${pct}% State Scale)`;
           dimLabel.style.color = '#ffbb00';
         } else {
-          dimLabel.innerText = 'Active (100% Brightness)';
+          dimLabel.innerText = 'Active (100% Scale)';
           dimLabel.style.color = 'var(--accent-cyan)';
         }
       }

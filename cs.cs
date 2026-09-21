@@ -29,6 +29,7 @@ uniform float pca_pc2[12];            // 2nd Principal Component (Green)
 uniform float pca_pc3[12];            // 3rd Principal Component (Blue)
 uniform float pca_mean[12];           // 12-channel mean vector
 uniform vec3 pca_std;                 // Standard deviations of top 3 PCs for contrast normalization
+uniform float nca_state_dim;          // Direct NCA state damping / dimming factor (0.0 to 1.0)
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
@@ -510,6 +511,14 @@ void main() {
                 state[0] = 0.35 * sin(float(current_index.x) * 0.12);
                 state[3] = 0.35 * cos(float(current_index.y) * 0.12);
                 state[4] = 0.15;
+            }
+        }
+
+        // Direct state dimming / damping directly in simulation buffer
+        float effStateDim = (nca_state_dim > 0.0) ? clamp(nca_state_dim, 0.01, 1.0) : 1.0;
+        if (effStateDim < 0.999) {
+            for (uint s = 0u; s < N; s++) {
+                state[s] *= effStateDim;
             }
         }
 

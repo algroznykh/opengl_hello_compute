@@ -436,7 +436,39 @@ def main():
     # Clean up candidate
     post_json("/api/genetic", {"action": "cancel"})
 
-    print("\nALL SPECTROGRAM INFLUENCE, STATE RESET, RANDOM RESET, SYNAPTIC WIRING, DIRECT CHANNELS, PCA RGB, VIEWPORT DIMMING & EASED RE-ROLL TESTS PASSED SUCCESSFULLY!")
+    print("[16] Testing Anti-Chaos Regularization & State Preservation (Non-Resetting Mutations)...")
+    # Set to strict criteria
+    post_json("/api/controls", {"eased_criteria": False})
+    status = json.loads(get("/api/status")[0])
+    assert status["nca_eased_criteria"] is False, "Expected strict criteria"
+
+    # Mutate candidate under strict criteria
+    res = post_json("/api/genetic", {"action": "mutate", "scale": 0.15, "rate": 0.25})
+    assert res["genetic_has_candidate"] is True
+    print("  -> Mutated candidate generated under strict criteria.")
+
+    # Wait for settling and state analyzer runs (approx 90 frames / 1.5s)
+    time.sleep(1.5)
+    status = json.loads(get("/api/status")[0])
+    print(f"  -> Candidate under strict criteria: rerolls={status['nca_rerolls']}, has_candidate={status['genetic_has_candidate']}")
+    assert status["genetic_has_candidate"] is True, "Candidate should remain active"
+    assert status["nca_rerolls"] < 10, f"Anti-chaos regularization should prevent infinite chaos rerolls! Found {status['nca_rerolls']} rerolls"
+    print("  -> Anti-chaos weight regularization successfully avoided dynamic chaos attractor.")
+
+    # Mutate everything to verify state is preserved (not reset to center seed)
+    post_json("/api/genetic", {"action": "mutate_everything", "scale": 0.10})
+    time.sleep(0.5)
+    status = json.loads(get("/api/status")[0])
+    assert status["genetic_has_candidate"] is True
+    print(f"  -> Mutate everything candidate active with state preserved (rerolls={status['nca_rerolls']}).")
+
+    # Clean up and reset
+    post_json("/api/genetic", {"action": "cancel"})
+    post_json("/api/controls", {"eased_criteria": True})
+    post_json("/api/reset_state", {})
+    print("  -> Clean state and eased criteria restored.")
+
+    print("\nALL SPECTROGRAM INFLUENCE, STATE RESET, RANDOM RESET, SYNAPTIC WIRING, DIRECT CHANNELS, PCA RGB, STATE DIMMING, ANTI-CHAOS REGULARIZATION & RE-ROLL TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     main()

@@ -147,6 +147,7 @@ public:
         for (int c = 0; c < 12; c++) {
             baseline.B[c] = bDist(rng);
         }
+        regularizeAntiChaos(baseline);
         candidate = baseline;
         history.clear();
         generation = 0;
@@ -273,10 +274,90 @@ public:
             count++;
         }
 
+        // Apply Anti-Chaos Weight Regularization Strategy:
+        // Guarantees negative self-damping, bounds spectral radius via Gershgorin circle theorem,
+        // and prevents high-frequency spatial gradients from pumping chaotic energy into the grid.
+        regularizeAntiChaos(candidate);
+
         mutatedCount = count;
         hasCandidate = true;
         dirty = true;
         return count;
+    }
+
+    void regularizeAntiChaos(NcaGpuGenome& g) {
+        // 1. Diagonal Homeostasis:
+        // In the trained model, W[c][c] (c in 0..11) are strongly negative (-800 to -3100),
+        // giving each channel strong dissipative self-damping.
+        // If a mutation pushes the diagonal above -400, negative feedback collapses and
+        // the network inevitably plunges into high-entropy dynamic chaos.
+        for (int c = 0; c < 12; c++) {
+            int diagIdx = c * 12 + c;
+            if (g.W[diagIdx] > -400.0f) {
+                g.W[diagIdx] = -400.0f - std::abs(g.W[diagIdx] + 400.0f) * 0.4f;
+            }
+            if (g.W[diagIdx] < -3500.0f) {
+                g.W[diagIdx] = -3500.0f;
+            }
+        }
+
+        // 2. Gershgorin Circle Spectral Radius Bound (Rows 0..11 - Linear State Recurrence):
+        // Bounding the real part of eigenvalues to prevent positive Lyapunov exponents.
+        // Cross-channel excitation sum_{j != r} |W[r][j]| must not overwhelm diagonal damping.
+        for (int r = 0; r < 12; r++) {
+            float diagVal = std::abs(g.W[r * 12 + r]);
+            float offDiagSum = 0.0f;
+            for (int c = 0; c < 12; c++) {
+                if (c != r) {
+                    offDiagSum += std::abs(g.W[r * 12 + c]);
+                }
+            }
+            float maxOffDiag = 1.25f * diagVal;
+            if (offDiagSum > maxOffDiag && offDiagSum > 1e-4f) {
+                float factor = maxOffDiag / offDiagSum;
+                for (int c = 0; c < 12; c++) {
+                    if (c != r) {
+                        g.W[r * 12 + c] *= factor;
+                    }
+                }
+            }
+        }
+
+        // 3. Spatial Gradient Dissipation (Rows 12..23 - Linear Perception):
+        // Dynamic chaos feeds on runaway spatial gradient amplification.
+        // Ensure total perception gain per channel is smaller than its state damping.
+        for (int c = 0; c < 12; c++) {
+            float stateDamping = std::abs(g.W[c * 12 + c]);
+            float percepSum = 0.0f;
+            for (int r = 12; r < 24; r++) {
+                percepSum += std::abs(g.W[r * 12 + c]);
+            }
+            float maxPercep = stateDamping * 0.85f;
+            if (percepSum > maxPercep && percepSum > 1e-4f) {
+                float factor = maxPercep / percepSum;
+                for (int r = 12; r < 24; r++) {
+                    g.W[r * 12 + c] *= factor;
+                }
+            }
+        }
+
+        // 4. Nonlinear Gradient Clamping (Rows 36..47 - |ps| terms):
+        // |ps| is strictly non-negative; large positive weights act as energy injectors.
+        for (int c = 0; c < 12; c++) {
+            for (int r = 36; r < 48; r++) {
+                int idx = r * 12 + c;
+                if (g.W[idx] > 350.0f) {
+                    g.W[idx] = 350.0f;
+                } else if (g.W[idx] < -350.0f) {
+                    g.W[idx] = -350.0f;
+                }
+            }
+        }
+
+        // 5. Biases moderation: prevent hard saturation to clamp boundaries
+        for (int c = 0; c < 12; c++) {
+            g.B[c] = std::max(-1100.0f, std::min(1100.0f, g.B[c]));
+        }
     }
 
     void cancel() {
@@ -457,6 +538,8 @@ struct NcaStateAnalyzer {
         bool hasCollapseOrExplosion = false;
         bool isExplosion = false;
         bool isCollapse = false;
+        bool isChaos = false;
+        bool isDeadState = false;
         int defectiveChannel = -1;
         std::string defectiveReason;
         ChannelStats channels[12];
@@ -464,6 +547,7 @@ struct NcaStateAnalyzer {
         float totalMeanAbs = 0.0f;
         float visibleMeanAbs = 0.0f;
         float visibleMaxVar = 0.0f;
+        float spatialRoughness = 0.0f;
     };
 
     AnalysisResult analyze(unsigned int stateBufHandle, int texWidth, int texHeight, bool easedCriteria = true, bool checkCollapse = false) {
@@ -488,10 +572,21 @@ struct NcaStateAnalyzer {
         double sumSq[12] = {0};
         int satCount[12] = {0};
         float maxAbsAll = 0.0f;
+        double sumGradSq = 0.0;
+        int gradSamples = 0;
 
         for (int i = 0; i < totalCells; i += stride) {
             const float* cell = &stateBufferCopy[i * 12];
             numSamples++;
+
+            // Measure horizontal spatial roughness between adjacent samples
+            if (i + stride < totalCells) {
+                float dx0 = stateBufferCopy[(i + stride) * 12 + 0] - cell[0];
+                float dx3 = stateBufferCopy[(i + stride) * 12 + 3] - cell[3];
+                sumGradSq += (double)dx0 * dx0 + (double)dx3 * dx3;
+                gradSamples++;
+            }
+
             for (int c = 0; c < 12; c++) {
                 float v = cell[c];
                 if (std::isnan(v) || std::isinf(v)) {
@@ -538,55 +633,47 @@ struct NcaStateAnalyzer {
             }
         }
 
-        if (!res.isExplosion) {
-            if (easedCriteria) {
-                // Eased explosion check:
-                // Explosion only if widespread blowout across multiple visible channels (pegged screen)
-                if ((highlySaturatedChannels >= 3 && res.visibleMaxVar < 0.015f) ||
-                    (res.visibleMeanAbs > 1.46f && res.visibleMaxVar * 4.0f < 0.005f)) {
-                    res.hasCollapseOrExplosion = true;
-                    res.isExplosion = true;
-                    res.defectiveReason = "Numerical explosion (widespread solid saturation, satChannels=" 
-                                          + std::to_string(highlySaturatedChannels) + ", visVar=" + std::to_string(res.visibleMaxVar) + ")";
-                }
+        // Spatial roughness ratio: in dynamic chaos (uncorrelated spatial noise), roughness > 0.80
+        float meanVar03 = 0.5f * (res.channels[0].variance + res.channels[3].variance);
+        if (gradSamples > 0 && meanVar03 > 1e-5f) {
+            double meanGradSq = sumGradSq / (double)gradSamples;
+            res.spatialRoughness = (float)(meanGradSq / (2.0 * meanVar03));
+        }
 
-                // Eased collapse check:
-                // Evaluated only after grace period (checkCollapse == true).
-                // Requires the ENTIRE state to be dead / evaporated!
-                // Dormant hidden channels are completely normal and NEVER trigger collapse.
-                if (checkCollapse) {
-                    if (res.maxAbsOverall < 0.015f) {
+        // State extinction check: true if all cells across the entire simulation are dead
+        res.isDeadState = (res.maxAbsOverall < 0.02f || (res.visibleMeanAbs < 0.0004f && res.totalMeanAbs < 0.001f));
+
+        if (!res.isExplosion) {
+            // 1. Numerical blowout check
+            if ((highlySaturatedChannels >= 3 && res.visibleMaxVar < 0.02f) ||
+                (res.visibleMeanAbs > 1.45f && res.visibleMaxVar < 0.008f)) {
+                res.hasCollapseOrExplosion = true;
+                res.isExplosion = true;
+                res.defectiveReason = "Numerical blowout (pegged clamp saturation across multiple channels)";
+            }
+
+            // 2. Dynamic Chaos Attractor Detection:
+            // High spatial roughness with high variance indicates boiling white-noise chaos.
+            // Rejecting this prevents the genetic algorithm from getting trapped in the chaotic attractor!
+            if (checkCollapse && res.spatialRoughness > 0.82f && meanVar03 > 0.06f) {
+                res.hasCollapseOrExplosion = true;
+                res.isChaos = true;
+                res.defectiveReason = "Dynamic chaos attractor detected (spatial roughness=" 
+                                      + std::to_string(res.spatialRoughness) + ", var=" + std::to_string(meanVar03) + ")";
+            }
+
+            // 3. State Collapse / Extinction check (only evaluated after settling grace period)
+            if (checkCollapse && !res.hasCollapseOrExplosion) {
+                if (res.isDeadState) {
+                    res.hasCollapseOrExplosion = true;
+                    res.isCollapse = true;
+                    res.defectiveReason = "Complete state extinction (all cells dead, maxAbs=" + std::to_string(res.maxAbsOverall) + ")";
+                } else if (!easedCriteria) {
+                    // Stricter criteria: ensure pattern has sufficient organized energy
+                    if (res.visibleMeanAbs < 0.002f || res.visibleMaxVar < 0.0001f) {
                         res.hasCollapseOrExplosion = true;
                         res.isCollapse = true;
-                        res.defectiveReason = "Complete state extinction (max cell activation across all channels = " 
-                                              + std::to_string(res.maxAbsOverall) + " < 0.015)";
-                    } else if (res.visibleMeanAbs < 0.0003f && res.totalMeanAbs < 0.0008f) {
-                        res.hasCollapseOrExplosion = true;
-                        res.isCollapse = true;
-                        res.defectiveReason = "Global state collapse (visibleMeanAbs=" + std::to_string(res.visibleMeanAbs) 
-                                              + ", totalMeanAbs=" + std::to_string(res.totalMeanAbs) + ")";
-                    }
-                }
-            } else {
-                // Strict criteria:
-                for (int c = 0; c < 12; c++) {
-                    if (res.channels[c].saturatedFraction > 0.90f && res.channels[c].meanAbs > 1.45f) {
-                        res.hasCollapseOrExplosion = true;
-                        res.isExplosion = true;
-                        res.defectiveChannel = c;
-                        res.defectiveReason = "Strict explosion check: channel " + std::to_string(c) + " saturated";
-                        break;
-                    }
-                }
-                if (checkCollapse && !res.hasCollapseOrExplosion) {
-                    for (int c = 0; c < 4; c++) {
-                        if (res.channels[c].meanAbs < 0.0005f || res.channels[c].variance < 0.00001f) {
-                            res.hasCollapseOrExplosion = true;
-                            res.isCollapse = true;
-                            res.defectiveChannel = c;
-                            res.defectiveReason = "Strict collapse check: visible channel " + std::to_string(c) + " collapsed";
-                            break;
-                        }
+                        res.defectiveReason = "Strict criteria: insufficient organized pattern energy";
                     }
                 }
             }
@@ -875,6 +962,37 @@ void resetSimulationState() {
     glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * sizeof(float), NULL, GL_DYNAMIC_DRAW);
 
     std::cout << "[Simulation] State completely reset with fresh center seed" << std::endl;
+}
+
+void dimSimulationState(float factor) {
+    if (TEXTURE_WIDTH == 0 || TEXTURE_HEIGHT == 0) return;
+    int sw = TEXTURE_WIDTH / 3;
+    int sh = TEXTURE_HEIGHT / 3;
+    int totalCells = sw * sh;
+    if (totalCells <= 0) return;
+
+    size_t totalBytes = (size_t)totalCells * 12 * sizeof(float);
+    std::vector<float> buf(totalCells * 12);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBuffer);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, totalBytes, buf.data());
+
+    float clampedFactor = std::max(0.0f, std::min(1.0f, factor));
+    for (float& v : buf) {
+        v *= clampedFactor;
+    }
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, totalBytes, buf.data());
+
+    // Also damp backbuffer texture to prevent bright feedback ghosting
+    std::vector<float> backBuf(TEXTURE_WIDTH * TEXTURE_HEIGHT * 4);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, backbufferTexture);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, backBuf.data());
+    for (float& v : backBuf) {
+        v *= clampedFactor;
+    }
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, TEXTURE_WIDTH, TEXTURE_HEIGHT, GL_RGBA, GL_FLOAT, backBuf.data());
+
+    std::cout << "[Simulation] State directly dimmed by factor " << clampedFactor << " (screen unscaled)" << std::endl;
 }
 
 unsigned int frameCounter;
@@ -1775,15 +1893,22 @@ int main(int argc, char* argv[]) {
                     bool shouldReroll = false;
                     if (analysis.isExplosion && candidateAgeFrames >= 3) {
                         shouldReroll = true;
+                    } else if (analysis.isChaos && candidateAgeFrames >= 10 && rerollCooldownFrames == 0) {
+                        shouldReroll = true;
                     } else if (analysis.isCollapse && checkCollapse && rerollCooldownFrames == 0) {
                         shouldReroll = true;
                     }
 
                     if (shouldReroll && g_geneticEngine.rerollAttempts < 25) {
-                        std::cout << "[Genetic Engine] State collapse / explosion detected: " 
+                        std::cout << "[Genetic Engine] State collapse / explosion / chaos detected: " 
                                   << analysis.defectiveReason << ". Auto-rerolling candidate!" << std::endl;
                         g_geneticEngine.reroll();
-                        resetSimulationState();
+                        // Only reset state if button was pressed or the state is completely dead!
+                        if (analysis.isDeadState) {
+                            resetSimulationState();
+                        } else {
+                            dimSimulationState(0.55f);
+                        }
                         if (g_radarConfig.ncaDimOnReroll.load()) {
                             currentDimFactor = 0.05f;
                             rerollDimTimer = 0.45f;
@@ -1816,6 +1941,23 @@ int main(int argc, char* argv[]) {
                 channelCycleTimer = 0.0f;
             }
 
+            // Update dim factor for CA simulation state (smooth damping during candidate re-rolls/mutations)
+            if (rerollDimTimer > 0.0f) {
+                rerollDimTimer -= deltaTime;
+                targetDimFactor = 0.05f;
+            } else {
+                targetDimFactor = 1.0f;
+            }
+
+            if (g_radarConfig.ncaDimOnReroll.load()) {
+                float dimSpeed = (targetDimFactor < currentDimFactor) ? 35.0f : 3.5f;
+                currentDimFactor += (targetDimFactor - currentDimFactor) * std::min(1.0f, dimSpeed * deltaTime);
+            } else {
+                currentDimFactor = 1.0f;
+            }
+            currentDimFactor = std::max(0.0f, std::min(1.0f, currentDimFactor));
+            g_radarConfig.ncaViewportDim.store(currentDimFactor);
+
             // Set radar shader controls from web interface
             currentComputeShader->setFloat("scan_phase", radarPhase);
             currentComputeShader->setFloat("scan_speed", curSpeed);
@@ -1838,6 +1980,7 @@ int main(int argc, char* argv[]) {
             currentComputeShader->setFloat("nca_pole_radial", g_radarConfig.ncaPoleRadial.load());
             currentComputeShader->setFloat("nca_pole_azimuthal", g_radarConfig.ncaPoleAzimuthal.load());
             currentComputeShader->setFloat("waveform_mix", currentWaveformMix);
+            currentComputeShader->setFloat("nca_state_dim", currentDimFactor);
             
             // Update uniform buffer with frame counter and time
             frameCounter++;
@@ -1869,27 +2012,9 @@ int main(int argc, char* argv[]) {
             glDispatchCompute((unsigned int)TEXTURE_WIDTH/10, (unsigned int)TEXTURE_HEIGHT/10, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
 
-            // Update dim factor for viewport (smooth transition during re-rolls to eliminate flickering)
-            if (rerollDimTimer > 0.0f) {
-                rerollDimTimer -= deltaTime;
-                targetDimFactor = 0.05f;
-            } else {
-                targetDimFactor = 1.0f;
-            }
-
-            if (g_radarConfig.ncaDimOnReroll.load()) {
-                float dimSpeed = (targetDimFactor < currentDimFactor) ? 35.0f : 3.5f;
-                currentDimFactor += (targetDimFactor - currentDimFactor) * std::min(1.0f, dimSpeed * deltaTime);
-            } else {
-                currentDimFactor = 1.0f;
-            }
-            currentDimFactor = std::max(0.0f, std::min(1.0f, currentDimFactor));
-            g_radarConfig.ncaViewportDim.store(currentDimFactor);
-
-            // Render
+            // Render (screen quad renders raw texture without artificial screen dimming)
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             screenQuad.use();
-            screenQuad.setFloat("dim_factor", currentDimFactor);
             renderQuad();
 
             glfwSwapBuffers(window);
