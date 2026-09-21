@@ -21,7 +21,9 @@ def post_json(path, data):
     )
     with urllib.request.urlopen(req, timeout=3) as resp:
         assert resp.status == 200, f"Expected 200, got {resp.status}"
-        return json.loads(resp.read().decode("utf-8"))
+        res = json.loads(resp.read().decode("utf-8"))
+    time.sleep(0.02)
+    return res
 
 def main():
     print("[1] Testing GET / (Minimal HTML Interface)...")
