@@ -16,6 +16,7 @@ uniform float decay_time;
 uniform vec2 freq_range;
 uniform float freq_min_hz;
 uniform float freq_max_hz;
+uniform int scale_type;
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {

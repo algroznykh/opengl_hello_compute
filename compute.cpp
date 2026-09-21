@@ -5,6 +5,7 @@
 #include <pulse/simple.h>
 #include <pulse/error.h>
 #include <thread>
+#include <chrono>
 #include <mutex>
 #include <vector>
 #include <complex>
@@ -231,43 +232,154 @@ void audioProcessingLoop() {
         fftwf_execute(fft_plan);
 
         // Compute raw FFT magnitudes for all bins
+        float lowEnergy = 0.0f;
+        float totalEnergy = 0.0f;
+        float peakMag = 0.0f;
+
         for (int i = 0; i < FFT_SIZE/2; i++) {
             float real = fft_out[i][0];
             float imag = fft_out[i][1];
-            rawFFTMagnitudes[i] = sqrt(real * real + imag * imag) / FFT_SIZE;
+            float mag = sqrt(real * real + imag * imag) / FFT_SIZE;
+            rawFFTMagnitudes[i] = mag;
+            totalEnergy += mag;
+            if (i >= 1 && i <= 8) { // Kick / bass band (~40Hz - 350Hz)
+                lowEnergy += mag;
+            }
+            if (mag > peakMag) {
+                peakMag = mag;
+            }
         }
 
-        // Map to logarithmic frequency scale for even overtone spacing
+        // --- Musical Rhythm Tracking & Auto Speed ---
+        static float avgLowEnergy = 0.0f;
+        static float energyVariance = 0.0f;
+        avgLowEnergy = 0.95f * avgLowEnergy + 0.05f * lowEnergy;
+        energyVariance = 0.95f * energyVariance + 0.05f * std::abs(lowEnergy - avgLowEnergy);
+
+        static auto lastFrameTime = std::chrono::steady_clock::now();
+        auto nowTime = std::chrono::steady_clock::now();
+        float dtAudio = std::chrono::duration<float>(nowTime - lastFrameTime).count();
+        lastFrameTime = nowTime;
+        if (dtAudio <= 0.0f || dtAudio > 0.2f) dtAudio = 0.0232f; // Fallback ~1024/44100s
+
+        static float timeSinceBeat = 0.0f;
+        static float estimatedBpm = 120.0f;
+        timeSinceBeat += dtAudio;
+
+        // Beat detection with dynamic threshold and refractory window (>= 220ms -> max ~270 BPM)
+        if (lowEnergy > (avgLowEnergy + 1.3f * energyVariance + 0.003f) && timeSinceBeat > 0.22f) {
+            float interval = timeSinceBeat;
+            timeSinceBeat = 0.0f;
+
+            if (interval >= 0.25f && interval <= 2.0f) {
+                // Normalize to standard musical tempo window (60 - 180 BPM)
+                while (interval > 1.0f) interval *= 0.5f;
+                while (interval < 0.33f) interval *= 2.0f;
+                float instantBpm = 60.0f / interval;
+                estimatedBpm = 0.88f * estimatedBpm + 0.12f * instantBpm;
+                g_radarConfig.detectedBpm.store(estimatedBpm);
+            }
+        }
+
+        if (g_radarConfig.autoSpeed.load()) {
+            int div = g_radarConfig.rhythmDivision.load();
+            float divFactor = 240.0f; // Default: 1 Bar = BPM / 240 rev/s
+            if (div == 0) divFactor = 60.0f;        // 1/4 note (1 Beat)
+            else if (div == 1) divFactor = 120.0f;  // 1/2 note (2 Beats)
+            else if (div == 2) divFactor = 240.0f;  // 1 Bar
+            else if (div == 3) divFactor = 480.0f;  // 2 Bars
+            else if (div == 4) divFactor = 960.0f;  // 4 Bars
+
+            float targetSpeed = estimatedBpm / divFactor;
+            float curSpeed = g_radarConfig.scanningSpeed.load();
+            float smoothedSpeed = curSpeed * 0.94f + targetSpeed * 0.06f;
+            g_radarConfig.scanningSpeed.store(smoothedSpeed);
+        }
+
+        // --- Frequency Range & Scaling Autotuning ---
+        float autoGainMultiplier = 1.0f;
+        if (g_radarConfig.autoFreq.load()) {
+            if (totalEnergy > 0.005f) {
+                float cumEnergy = 0.0f;
+                int lowBin = 1;
+                int highBin = FFT_SIZE / 2 - 1;
+                float lowThresh = totalEnergy * 0.03f;
+                float highThresh = totalEnergy * 0.92f;
+
+                for (int i = 1; i < FFT_SIZE / 2; i++) {
+                    cumEnergy += rawFFTMagnitudes[i];
+                    if (cumEnergy < lowThresh) lowBin = i;
+                    if (cumEnergy >= highThresh) {
+                        highBin = i;
+                        break;
+                    }
+                }
+
+                float detectedMin = std::max(20.0f, lowBin * FREQ_PER_BIN);
+                float detectedMax = std::min(18000.0f, highBin * FREQ_PER_BIN);
+                if (detectedMax < detectedMin + 300.0f) {
+                    detectedMax = detectedMin + 300.0f;
+                }
+
+                static float smoothedMinFreq = 100.0f;
+                static float smoothedMaxFreq = 10000.0f;
+                smoothedMinFreq = 0.98f * smoothedMinFreq + 0.02f * detectedMin;
+                smoothedMaxFreq = 0.98f * smoothedMaxFreq + 0.02f * detectedMax;
+                g_radarConfig.freqMinHz.store(smoothedMinFreq);
+                g_radarConfig.freqMaxHz.store(smoothedMaxFreq);
+            }
+
+            // Auto-scaling gain
+            static float smoothedPeak = 0.05f;
+            smoothedPeak = std::max(smoothedPeak * 0.995f, peakMag);
+            autoGainMultiplier = std::min(4.0f, std::max(0.3f, 0.10f / std::max(smoothedPeak, 0.005f)));
+            g_radarConfig.autoGain.store(autoGainMultiplier);
+        } else {
+            g_radarConfig.autoGain.store(1.0f);
+        }
+
+        // --- Frequency Scaling (Log / Mel / Linear) ---
         float curMinFreq = g_radarConfig.freqMinHz.load();
         float curMaxFreq = g_radarConfig.freqMaxHz.load();
         if (curMinFreq < 10.0f) curMinFreq = 10.0f;
-        if (curMaxFreq <= curMinFreq) curMaxFreq = curMinFreq + 100.0f;
+        if (curMaxFreq <= curMinFreq) curMaxFreq = curMinFreq + 50.0f;
+
+        int scaleMode = g_radarConfig.scaleType.load(); // 0: log, 1: mel, 2: linear
 
         float logMinFreq = log2(curMinFreq);
         float logMaxFreq = log2(curMaxFreq);
         float logRange = logMaxFreq - logMinFreq;
-        
+
+        float melMinFreq = 2595.0f * log10(1.0f + curMinFreq / 700.0f);
+        float melMaxFreq = 2595.0f * log10(1.0f + curMaxFreq / 700.0f);
+        float melRange = melMaxFreq - melMinFreq;
+
         for (int i = 0; i < MUSICAL_BINS; i++) {
-            // Logarithmic frequency distribution from curMinFreq to curMaxFreq
-            // Map bin index to logarithmic frequency
-            float logFreq = logMinFreq + (logRange * i) / (MUSICAL_BINS - 1);
-            float targetFreq = pow(2, logFreq);
+            float norm = (float)i / (MUSICAL_BINS - 1);
+            float targetFreq = 100.0f;
+
+            if (scaleMode == 1) {
+                // Mel scale
+                float mel = melMinFreq + melRange * norm;
+                targetFreq = 700.0f * (pow(10.0f, mel / 2595.0f) - 1.0f);
+            } else if (scaleMode == 2) {
+                // Linear scale
+                targetFreq = curMinFreq + (curMaxFreq - curMinFreq) * norm;
+            } else {
+                // Logarithmic scale (default)
+                float logFreq = logMinFreq + logRange * norm;
+                targetFreq = pow(2.0f, logFreq);
+            }
+
             int targetBin = (int)(targetFreq / FREQ_PER_BIN);
-            
-            // Clamp to valid range and interpolate if needed
-            if (targetBin >= 0 && targetBin < FFT_SIZE/2) {
-                fftMagnitudes[i] = rawFFTMagnitudes[targetBin];
-                
-                // Linear interpolation for smoother transitions
-                if (targetBin + 1 < FFT_SIZE/2) {
-                    float exactBin = targetFreq / FREQ_PER_BIN;
-                    float fraction = exactBin - targetBin;
-                    fftMagnitudes[i] = rawFFTMagnitudes[targetBin] * (1.0f - fraction) + 
-                                     rawFFTMagnitudes[targetBin + 1] * fraction;
+            if (targetBin >= 0 && targetBin < FFT_SIZE / 2) {
+                float exactBin = targetFreq / FREQ_PER_BIN;
+                float fraction = exactBin - targetBin;
+                float val = rawFFTMagnitudes[targetBin];
+                if (targetBin + 1 < FFT_SIZE / 2) {
+                    val = rawFFTMagnitudes[targetBin] * (1.0f - fraction) + rawFFTMagnitudes[targetBin + 1] * fraction;
                 }
-                
-                // Apply logarithmic scaling for better visualization
-                //fftMagnitudes[i] = fftMagnitudes[i] > 0.0f ? log10(1.0f + fftMagnitudes[i] * 10.0f) : 0.0f;
+                fftMagnitudes[i] = val * autoGainMultiplier;
             } else {
                 fftMagnitudes[i] = 0.0f;
             }
@@ -648,6 +760,7 @@ int main(int argc, char* argv[]) {
             currentComputeShader->setVec2("freq_range", g_radarConfig.freqRangeMin.load(), g_radarConfig.freqRangeMax.load());
             currentComputeShader->setFloat("freq_min_hz", g_radarConfig.freqMinHz.load());
             currentComputeShader->setFloat("freq_max_hz", g_radarConfig.freqMaxHz.load());
+            currentComputeShader->setInt("scale_type", g_radarConfig.scaleType.load());
             
             // Update uniform buffer with frame counter and time
             frameCounter++;

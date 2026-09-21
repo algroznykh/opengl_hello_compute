@@ -31,6 +31,25 @@ struct RadarConfig {
     std::atomic<float> currentFps{0.0f};       // Measured FPS for live display
     std::atomic<int> frameCount{0};            // Total frames rendered
 
+    // Frequency scaling: 0 = log, 1 = mel, 2 = linear
+    std::atomic<int> scaleType{0};
+
+    // Autotuning for scanning speed (musical rhythm sync)
+    std::atomic<bool> autoSpeed{false};
+    std::atomic<int> rhythmDivision{2};       // 0: 1/4 note (1 beat), 1: 1/2 note, 2: 1 bar (default), 3: 2 bars, 4: 4 bars
+    std::atomic<float> detectedBpm{120.0f};
+
+    // Autotuning for frequency range / scaling
+    std::atomic<bool> autoFreq{false};
+    std::atomic<float> autoGain{1.0f};
+
+    std::string scaleName() const {
+        int s = scaleType.load();
+        if (s == 1) return "mel";
+        if (s == 2) return "linear";
+        return "log";
+    }
+
     std::string toJson() const {
         std::ostringstream ss;
         ss << std::fixed << std::setprecision(4);
@@ -41,6 +60,13 @@ struct RadarConfig {
         ss << "  \"freq_max\": " << freqMaxHz.load() << ",\n";
         ss << "  \"freq_range_low\": " << freqRangeMin.load() << ",\n";
         ss << "  \"freq_range_high\": " << freqRangeMax.load() << ",\n";
+        ss << "  \"scale_type\": " << scaleType.load() << ",\n";
+        ss << "  \"scale\": \"" << scaleName() << "\",\n";
+        ss << "  \"auto_speed\": " << (autoSpeed.load() ? "true" : "false") << ",\n";
+        ss << "  \"rhythm_division\": " << rhythmDivision.load() << ",\n";
+        ss << "  \"detected_bpm\": " << detectedBpm.load() << ",\n";
+        ss << "  \"auto_freq\": " << (autoFreq.load() ? "true" : "false") << ",\n";
+        ss << "  \"auto_gain\": " << autoGain.load() << ",\n";
         ss << "  \"fps\": " << currentFps.load() << ",\n";
         ss << "  \"frame\": " << frameCount.load() << "\n";
         ss << "}";
@@ -48,7 +74,7 @@ struct RadarConfig {
     }
 };
 
-// Simple helper to parse float from JSON without external libraries
+// JSON parsing helpers
 inline bool extractJsonFloat(const std::string& json, const std::string& key, float& outVal) {
     size_t keyPos = json.find("\"" + key + "\"");
     if (keyPos == std::string::npos) return false;
@@ -64,6 +90,54 @@ inline bool extractJsonFloat(const std::string& json, const std::string& key, fl
     } catch (...) {
         return false;
     }
+}
+
+inline bool extractJsonInt(const std::string& json, const std::string& key, int& outVal) {
+    size_t keyPos = json.find("\"" + key + "\"");
+    if (keyPos == std::string::npos) return false;
+    size_t colonPos = json.find(':', keyPos);
+    if (colonPos == std::string::npos) return false;
+    size_t start = json.find_first_of("-0123456789", colonPos);
+    if (start == std::string::npos) return false;
+    size_t end = json.find_first_not_of("-0123456789", start);
+    std::string valStr = json.substr(start, (end == std::string::npos ? json.length() : end) - start);
+    try {
+        outVal = std::stoi(valStr);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline bool extractJsonBool(const std::string& json, const std::string& key, bool& outVal) {
+    size_t keyPos = json.find("\"" + key + "\"");
+    if (keyPos == std::string::npos) return false;
+    size_t colonPos = json.find(':', keyPos);
+    if (colonPos == std::string::npos) return false;
+    size_t valPos = json.find_first_not_of(" \t\r\n", colonPos + 1);
+    if (valPos == std::string::npos) return false;
+    if (json.substr(valPos, 4) == "true" || json[valPos] == '1') {
+        outVal = true;
+        return true;
+    }
+    if (json.substr(valPos, 5) == "false" || json[valPos] == '0') {
+        outVal = false;
+        return true;
+    }
+    return false;
+}
+
+inline bool extractJsonString(const std::string& json, const std::string& key, std::string& outVal) {
+    size_t keyPos = json.find("\"" + key + "\"");
+    if (keyPos == std::string::npos) return false;
+    size_t colonPos = json.find(':', keyPos);
+    if (colonPos == std::string::npos) return false;
+    size_t quoteStart = json.find('\"', colonPos);
+    if (quoteStart == std::string::npos) return false;
+    size_t quoteEnd = json.find('\"', quoteStart + 1);
+    if (quoteEnd == std::string::npos) return false;
+    outVal = json.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
+    return true;
 }
 
 class RadarWebServer {
@@ -139,7 +213,7 @@ private:
     std::thread m_serverThread;
 
     std::string getHtmlContent() {
-        // First attempt to read from web/index.html
+        // Read from web/index.html if available
         std::ifstream file("web/index.html");
         if (file.is_open()) {
             std::stringstream ss;
@@ -158,7 +232,7 @@ private:
             pfd.events = POLLIN;
             pfd.revents = 0;
 
-            int pollRet = poll(&pfd, 1, 500); // 500ms timeout to check m_running
+            int pollRet = poll(&pfd, 1, 500);
             if (pollRet < 0) {
                 if (errno == EINTR) continue;
                 break;
@@ -170,7 +244,6 @@ private:
                 socklen_t clientLen = sizeof(clientAddr);
                 int clientFd = accept(m_serverFd, (struct sockaddr*)&clientAddr, &clientLen);
                 if (clientFd >= 0) {
-                    // Set client timeout
                     struct timeval tv;
                     tv.tv_sec = 2;
                     tv.tv_usec = 0;
@@ -193,7 +266,6 @@ private:
         buffer[bytesRead] = '\0';
         std::string request(buffer, bytesRead);
 
-        // Parse first line: METHOD PATH HTTP/1.1
         size_t firstLineEnd = request.find("\r\n");
         if (firstLineEnd == std::string::npos) return;
         std::string firstLine = request.substr(0, firstLineEnd);
@@ -202,17 +274,15 @@ private:
         std::string method, path, version;
         iss >> method >> path >> version;
 
-        // Strip query params for path matching
         std::string cleanPath = path;
         size_t qPos = cleanPath.find('?');
         if (qPos != std::string::npos) {
             cleanPath = cleanPath.substr(0, qPos);
         }
 
-        // Standard CORS headers
         std::string cors = 
             "Access-Control-Allow-Origin: *\r\n"
-            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+            "Access-Control-Allow-Methods: GET, POST, OPTIONS, HEAD\r\n"
             "Access-Control-Allow-Headers: Content-Type\r\n";
 
         if (method == "OPTIONS") {
@@ -254,13 +324,16 @@ private:
         }
 
         if (method == "POST" && cleanPath == "/api/controls") {
-            // Find body after \r\n\r\n
             size_t bodyPos = request.find("\r\n\r\n");
             std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
 
             float val;
+            int intVal;
+            bool boolVal;
+            std::string strVal;
+
             if (extractJsonFloat(body, "scanning_speed", val)) {
-                if (val >= 0.0f && val <= 10.0f) {
+                if (val >= 0.01f && val <= 10.0f) {
                     m_config.scanningSpeed.store(val);
                 }
             }
@@ -290,6 +363,32 @@ private:
                 }
             }
 
+            // Scale setting
+            if (extractJsonString(body, "scale", strVal)) {
+                if (strVal == "mel") m_config.scaleType.store(1);
+                else if (strVal == "linear") m_config.scaleType.store(2);
+                else if (strVal == "log") m_config.scaleType.store(0);
+            } else if (extractJsonInt(body, "scale_type", intVal)) {
+                if (intVal >= 0 && intVal <= 2) {
+                    m_config.scaleType.store(intVal);
+                }
+            }
+
+            // Auto speed setting
+            if (extractJsonBool(body, "auto_speed", boolVal)) {
+                m_config.autoSpeed.store(boolVal);
+            }
+            if (extractJsonInt(body, "rhythm_division", intVal)) {
+                if (intVal >= 0 && intVal <= 4) {
+                    m_config.rhythmDivision.store(intVal);
+                }
+            }
+
+            // Auto freq setting
+            if (extractJsonBool(body, "auto_freq", boolVal)) {
+                m_config.autoFreq.store(boolVal);
+            }
+
             std::string resBody = m_config.toJson();
             std::ostringstream response;
             response << "HTTP/1.1 200 OK\r\n"
@@ -303,7 +402,6 @@ private:
             return;
         }
 
-        // 404 for anything else
         std::string notFound = "HTTP/1.1 404 Not Found\r\n" + cors + "Content-Length: 9\r\n\r\nNot Found";
         send(clientFd, notFound.c_str(), notFound.length(), 0);
     }
@@ -316,20 +414,19 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Radar Shader Controller</title>
+  <title>Radar Shader Controls</title>
   <style>
     :root {
-      --bg: #0b0f14;
+      --bg: #0a0e13;
       --card-bg: #121820;
-      --accent-green: #00ff88;
-      --accent-cyan: #00e5ff;
-      --accent-dim: #1e3a34;
-      --text: #e0f2ee;
-      --text-muted: #6b8f85;
-      --border: #1a2c26;
-      --slider-track: #172421;
+      --card-border: #1a262f;
+      --accent: #00ff88;
+      --accent-rgb: 0, 255, 136;
+      --text: #e2edf2;
+      --text-muted: #6f8898;
+      --track: #172028;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, monospace, sans-serif; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace, sans-serif; }
     body {
       background-color: var(--bg);
       color: var(--text);
@@ -339,293 +436,224 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       align-items: center;
       padding: 24px 16px;
     }
-    .container {
+    .panel {
       width: 100%;
-      max-width: 900px;
+      max-width: 520px;
       display: flex;
       flex-direction: column;
-      gap: 20px;
+      gap: 16px;
     }
     header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 16px 24px;
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      box-shadow: 0 4px 20px rgba(0, 255, 136, 0.05);
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--card-border);
     }
-    .title-area h1 {
-      font-size: 1.3rem;
+    .title {
+      font-size: 0.95rem;
       font-weight: 700;
       letter-spacing: 2px;
-      color: var(--accent-green);
       text-transform: uppercase;
+      color: var(--accent);
+    }
+    .conn-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #444;
+      display: inline-block;
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .conn-dot.online {
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+    }
+    .section {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 16px 18px;
       display: flex;
-      align-items: center;
+      flex-direction: column;
       gap: 10px;
     }
-    .badge {
-      font-size: 0.75rem;
-      padding: 4px 10px;
-      border-radius: 20px;
-      font-weight: bold;
-      letter-spacing: 1px;
-    }
-    .badge-online {
-      background: rgba(0, 255, 136, 0.15);
-      color: var(--accent-green);
-      border: 1px solid var(--accent-green);
-    }
-    .badge-offline {
-      background: rgba(255, 68, 68, 0.15);
-      color: #ff4444;
-      border: 1px solid #ff4444;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 20px;
-    }
-    @media (max-width: 768px) {
-      .grid { grid-template-columns: 1fr; }
-    }
-    .card {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 20px;
+    .section-head {
       display: flex;
-      flex-direction: column;
-      gap: 16px;
+      justify-content: space-between;
+      align-items: center;
     }
-    .card-title {
-      font-size: 0.9rem;
+    .section-title {
+      font-size: 0.8rem;
       font-weight: 600;
-      color: var(--accent-cyan);
-      letter-spacing: 1.5px;
       text-transform: uppercase;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 8px;
-    }
-    .radar-preview-card {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: 280px;
-    }
-    canvas#radarCanvas {
-      width: 240px;
-      height: 240px;
-      border-radius: 50%;
-      background: #081010;
-      border: 2px solid var(--accent-dim);
-      box-shadow: 0 0 25px rgba(0, 255, 136, 0.1);
-    }
-    .control-group {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .control-label {
-      display: flex;
-      justify-content: space-between;
-      font-size: 0.85rem;
+      letter-spacing: 1.2px;
       color: var(--text-muted);
     }
-    .control-value {
-      color: var(--accent-green);
+    .val {
       font-family: monospace;
+      font-size: 0.85rem;
       font-weight: 700;
-      font-size: 0.95rem;
+      color: var(--accent);
     }
     input[type=range] {
       -webkit-appearance: none;
       width: 100%;
       height: 6px;
       border-radius: 3px;
-      background: var(--slider-track);
+      background: var(--track);
       outline: none;
     }
     input[type=range]::-webkit-slider-thumb {
       -webkit-appearance: none;
-      width: 18px;
-      height: 18px;
+      width: 16px;
+      height: 16px;
       border-radius: 50%;
-      background: var(--accent-green);
+      background: var(--accent);
       cursor: pointer;
-      box-shadow: 0 0 8px var(--accent-green);
-      transition: transform 0.1s;
+      box-shadow: 0 0 6px var(--accent);
     }
-    input[type=range]::-webkit-slider-thumb:hover {
-      transform: scale(1.2);
-    }
-    .btn-group {
+    .btn-row {
       display: flex;
-      flex-wrap: wrap;
       gap: 6px;
-      margin-top: 4px;
+      margin-top: 2px;
     }
     button.btn {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
+      background: #0f151c;
+      border: 1px solid var(--card-border);
       color: var(--text);
-      padding: 6px 12px;
-      border-radius: 6px;
-      font-size: 0.75rem;
+      padding: 6px 10px;
+      border-radius: 5px;
+      font-size: 0.74rem;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.15s;
+      flex: 1;
+      text-align: center;
     }
     button.btn:hover {
-      border-color: var(--accent-green);
-      color: var(--accent-green);
-      background: rgba(0, 255, 136, 0.05);
+      border-color: var(--accent);
+      color: var(--accent);
     }
-    button.btn-primary {
-      background: rgba(0, 255, 136, 0.1);
-      border-color: var(--accent-green);
-      color: var(--accent-green);
+    button.btn.active {
+      background: rgba(var(--accent-rgb), 0.15);
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 600;
     }
-    .stats-bar {
-      display: flex;
-      justify-content: space-around;
-      padding: 12px;
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      font-family: monospace;
-      font-size: 0.85rem;
+    button.toggle-btn {
+      background: #0f151c;
+      border: 1px solid var(--card-border);
       color: var(--text-muted);
+      padding: 6px 12px;
+      border-radius: 5px;
+      font-size: 0.74rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.2s;
     }
-    .stat-val {
-      color: var(--accent-cyan);
-      font-weight: bold;
+    button.toggle-btn.active {
+      background: rgba(var(--accent-rgb), 0.15);
+      border-color: var(--accent);
+      color: var(--accent);
+      box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.2);
+    }
+    .meta-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      font-family: monospace;
+      margin-top: -2px;
     }
   </style>
 </head>
 <body>
-  <div class="container">
+  <div class="panel">
     <header>
-      <div class="title-area">
-        <h1>RADAR SHADER CONTROLS</h1>
-      </div>
-      <div id="statusBadge" class="badge badge-offline">CONNECTING...</div>
+      <div class="title">Radar Shader Controls</div>
+      <div id="connDot" class="conn-dot" title="Connection status"></div>
     </header>
 
-    <div class="stats-bar">
-      <div>FPS: <span id="statFps" class="stat-val">--</span></div>
-      <div>FRAME: <span id="statFrame" class="stat-val">--</span></div>
-      <div>SWEEP: <span id="statSweep" class="stat-val">0.40 rev/s</span></div>
-      <div>DECAY: <span id="statDecay" class="stat-val">0.9950</span></div>
-      <div>RANGE: <span id="statFreq" class="stat-val">100 - 10000 Hz</span></div>
-    </div>
-
-    <div class="grid">
-      <!-- Radar Simulation Canvas -->
-      <div class="card radar-preview-card">
-        <canvas id="radarCanvas" width="240" height="240"></canvas>
-        <div style="font-size:0.8rem; color:var(--text-muted); margin-top:8px;">Live Parameter Visualizer</div>
+    <!-- Scanning Speed -->
+    <div class="section">
+      <div class="section-head">
+        <span class="section-title">Scanning Speed</span>
+        <span id="speedVal" class="val">0.40 rev/s</span>
+      </div>
+      <input type="range" id="speedSlider" min="0.02" max="3.00" step="0.01" value="0.40">
+      
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <button id="autoSpeedBtn" class="toggle-btn" onclick="toggleAutoSpeed()">
+          ⚡ Auto Rhythm Sync
+        </button>
+        <div id="rhythmInfo" class="meta-row" style="margin:0;">
+          <span id="bpmLabel">BPM: --</span>
+        </div>
       </div>
 
-      <!-- Radar Motion & Decay -->
-      <div class="card">
-        <div class="card-title">
-          <span>Beam & Persistence</span>
-        </div>
-
-        <!-- Scanning Speed -->
-        <div class="control-group">
-          <div class="control-label">
-            <span>Scanning Speed</span>
-            <span id="speedVal" class="control-value">0.40 rev/s</span>
-          </div>
-          <input type="range" id="speedSlider" min="0.05" max="3.00" step="0.05" value="0.40">
-          <div class="btn-group">
-            <button class="btn" onclick="setSpeed(0.1)">0.1x Slow</button>
-            <button class="btn" onclick="setSpeed(0.4)">0.4x Default</button>
-            <button class="btn" onclick="setSpeed(1.0)">1.0x 1 rev/s</button>
-            <button class="btn" onclick="setSpeed(2.0)">2.0x Fast</button>
-          </div>
-        </div>
-
-        <!-- Decay Time -->
-        <div class="control-group">
-          <div class="control-label">
-            <span>Decay Persistence Factor</span>
-            <span id="decayVal" class="control-value">0.9950 (~2.3s)</span>
-          </div>
-          <input type="range" id="decaySlider" min="0.8000" max="0.9995" step="0.0005" value="0.9950">
-          <div class="btn-group">
-            <button class="btn" onclick="setDecay(0.9000)">Fast (0.90)</button>
-            <button class="btn" onclick="setDecay(0.9700)">Med (0.97)</button>
-            <button class="btn" onclick="setDecay(0.9950)">Default (0.995)</button>
-            <button class="btn" onclick="setDecay(0.9990)">Ghost (0.999)</button>
-          </div>
-        </div>
+      <div class="btn-row">
+        <button class="btn" id="divBtn0" onclick="setRhythmDiv(0)">1/4 (Beat)</button>
+        <button class="btn" id="divBtn1" onclick="setRhythmDiv(1)">1/2 (2 Beats)</button>
+        <button class="btn active" id="divBtn2" onclick="setRhythmDiv(2)">1 Bar</button>
+        <button class="btn" id="divBtn3" onclick="setRhythmDiv(3)">2 Bars</button>
+        <button class="btn" id="divBtn4" onclick="setRhythmDiv(4)">4 Bars</button>
       </div>
     </div>
 
-    <!-- Frequency Range Card -->
-    <div class="card">
-      <div class="card-title">
-        <span>Audio FFT & Shader Frequency Range</span>
+    <!-- Decay Time -->
+    <div class="section">
+      <div class="section-head">
+        <span class="section-title">Decay Persistence</span>
+        <span id="decayVal" class="val">0.9950</span>
       </div>
-
-      <div class="grid" style="gap:16px;">
-        <div class="control-group">
-          <div class="control-label">
-            <span>Min Audible Frequency</span>
-            <span id="freqMinVal" class="control-value">100 Hz</span>
-          </div>
-          <input type="range" id="freqMinSlider" min="20" max="2000" step="10" value="100">
-        </div>
-
-        <div class="control-group">
-          <div class="control-label">
-            <span>Max Audible Frequency</span>
-            <span id="freqMaxVal" class="control-value">10000 Hz</span>
-          </div>
-          <input type="range" id="freqMaxSlider" min="500" max="20000" step="100" value="10000">
-        </div>
-      </div>
-
-      <div class="control-group" style="margin-top: 4px;">
-        <div class="control-label">
-          <span>Shader Radial Span (Inner - Outer)</span>
-          <span id="spanVal" class="control-value">0% - 100%</span>
-        </div>
-        <div style="display:flex; gap:10px;">
-          <input type="range" id="spanMinSlider" min="0.0" max="0.9" step="0.05" value="0.0" style="flex:1;">
-          <input type="range" id="spanMaxSlider" min="0.1" max="1.0" step="0.05" value="1.0" style="flex:1;">
-        </div>
-      </div>
-
-      <div class="btn-group">
-        <span style="font-size:0.75rem; color:var(--text-muted); align-self:center; margin-right:6px;">Presets:</span>
-        <button class="btn" onclick="setFreqBand(20, 20000)">Full Spectrum (20Hz - 20kHz)</button>
-        <button class="btn" onclick="setFreqBand(20, 300)">Sub & Bass (20Hz - 300Hz)</button>
-        <button class="btn" onclick="setFreqBand(250, 4000)">Voice & Mids (250Hz - 4kHz)</button>
-        <button class="btn" onclick="setFreqBand(4000, 18000)">Highs & Air (4kHz - 18kHz)</button>
-        <button class="btn" onclick="setFreqBand(100, 10000)">Default (100Hz - 10kHz)</button>
+      <input type="range" id="decaySlider" min="0.8000" max="0.9995" step="0.0005" value="0.9950">
+      <div class="btn-row">
+        <button class="btn" onclick="setDecay(0.9200)">Fast</button>
+        <button class="btn" onclick="setDecay(0.9700)">Medium</button>
+        <button class="btn active" id="decayDefBtn" onclick="setDecay(0.9950)">Default</button>
+        <button class="btn" onclick="setDecay(0.9990)">Long Glow</button>
       </div>
     </div>
 
-    <!-- Presets Card -->
-    <div class="card">
-      <div class="card-title">
-        <span>Global Shader Presets</span>
+    <!-- Frequency Scale Mode (Mel / Log / Linear) -->
+    <div class="section">
+      <div class="section-head">
+        <span class="section-title">Frequency Scale</span>
+        <span id="scaleLabel" class="val">Logarithmic</span>
       </div>
-      <div class="btn-group">
-        <button class="btn btn-primary" onclick="applyPreset('default')">Default Radar</button>
-        <button class="btn" onclick="applyPreset('sonar')">Deep Sub Sonar</button>
-        <button class="btn" onclick="applyPreset('strobe')">Fast Strobe Visualizer</button>
-        <button class="btn" onclick="applyPreset('phosphor')">Long Phosphor Glow</button>
-        <button class="btn" onclick="applyPreset('matrix')">High Sweep Matrix</button>
+      <div class="btn-row">
+        <button class="btn active" id="scaleBtnLog" onclick="setScale('log')">Log</button>
+        <button class="btn" id="scaleBtnMel" onclick="setScale('mel')">Mel</button>
+        <button class="btn" id="scaleBtnLin" onclick="setScale('linear')">Linear</button>
+      </div>
+    </div>
+
+    <!-- Frequency Range & Scaling Autotune -->
+    <div class="section">
+      <div class="section-head">
+        <span class="section-title">Frequency Range</span>
+        <span id="freqRangeVal" class="val">100 - 10000 Hz</span>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:4px;">
+        <div class="meta-row"><span>Min Freq</span><span id="minFreqVal">100 Hz</span></div>
+        <input type="range" id="freqMinSlider" min="20" max="2000" step="10" value="100">
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:4px; margin-top:4px;">
+        <div class="meta-row"><span>Max Freq</span><span id="maxFreqVal">10000 Hz</span></div>
+        <input type="range" id="freqMaxSlider" min="200" max="20000" step="100" value="10000">
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:4px;">
+        <button id="autoFreqBtn" class="toggle-btn" onclick="toggleAutoFreq()">
+          ⚡ Auto Freq & Scaling
+        </button>
+        <span id="gainLabel" class="meta-row" style="margin:0;">Gain: 1.0x</span>
       </div>
     </div>
   </div>
@@ -638,62 +666,74 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       freq_max: 10000,
       freq_range_low: 0.0,
       freq_range_high: 1.0,
-      fps: 0,
-      frame: 0
+      scale: "log",
+      scale_type: 0,
+      auto_speed: false,
+      rhythm_division: 2,
+      detected_bpm: 120.0,
+      auto_freq: false,
+      auto_gain: 1.0
     };
 
+    const connDot = document.getElementById('connDot');
     const speedSlider = document.getElementById('speedSlider');
     const decaySlider = document.getElementById('decaySlider');
     const freqMinSlider = document.getElementById('freqMinSlider');
     const freqMaxSlider = document.getElementById('freqMaxSlider');
-    const spanMinSlider = document.getElementById('spanMinSlider');
-    const spanMaxSlider = document.getElementById('spanMaxSlider');
 
     const speedVal = document.getElementById('speedVal');
     const decayVal = document.getElementById('decayVal');
-    const freqMinVal = document.getElementById('freqMinVal');
-    const freqMaxVal = document.getElementById('freqMaxVal');
-    const spanVal = document.getElementById('spanVal');
+    const freqRangeVal = document.getElementById('freqRangeVal');
+    const minFreqVal = document.getElementById('minFreqVal');
+    const maxFreqVal = document.getElementById('maxFreqVal');
+    const scaleLabel = document.getElementById('scaleLabel');
+    const bpmLabel = document.getElementById('bpmLabel');
+    const gainLabel = document.getElementById('gainLabel');
 
-    const statFps = document.getElementById('statFps');
-    const statFrame = document.getElementById('statFrame');
-    const statSweep = document.getElementById('statSweep');
-    const statDecay = document.getElementById('statDecay');
-    const statFreq = document.getElementById('statFreq');
-    const statusBadge = document.getElementById('statusBadge');
+    const autoSpeedBtn = document.getElementById('autoSpeedBtn');
+    const autoFreqBtn = document.getElementById('autoFreqBtn');
 
     let isSending = false;
     let pendingUpdate = false;
 
-    function calculateHalfLife(decay) {
-      if (decay >= 0.9999) return 'inf';
-      if (decay <= 0) return '0s';
-      const halfLifeSec = Math.log(0.5) / (60 * Math.log(decay));
-      return halfLifeSec < 1 ? (halfLifeSec * 1000).toFixed(0) + 'ms' : halfLifeSec.toFixed(1) + 's';
-    }
-
     function updateUI(s) {
       speedVal.innerText = Number(s.scanning_speed).toFixed(2) + ' rev/s';
-      decayVal.innerText = Number(s.decay_time).toFixed(4) + ' (~' + calculateHalfLife(s.decay_time) + ')';
-      freqMinVal.innerText = Math.round(s.freq_min) + ' Hz';
-      freqMaxVal.innerText = Math.round(s.freq_max) + ' Hz';
-      spanVal.innerText = Math.round(s.freq_range_low * 100) + '% - ' + Math.round(s.freq_range_high * 100) + '%';
+      decayVal.innerText = Number(s.decay_time).toFixed(4);
+      minFreqVal.innerText = Math.round(s.freq_min) + ' Hz';
+      maxFreqVal.innerText = Math.round(s.freq_max) + ' Hz';
+      freqRangeVal.innerText = Math.round(s.freq_min) + ' - ' + Math.round(s.freq_max) + ' Hz';
 
-      statSweep.innerText = Number(s.scanning_speed).toFixed(2) + ' rev/s';
-      statDecay.innerText = Number(s.decay_time).toFixed(4);
-      statFreq.innerText = Math.round(s.freq_min) + ' - ' + Math.round(s.freq_max) + ' Hz';
+      if (!autoSpeedBtn.matches(':active') && s.auto_speed !== undefined) {
+        autoSpeedBtn.classList.toggle('active', !!s.auto_speed);
+      }
+      if (!autoFreqBtn.matches(':active') && s.auto_freq !== undefined) {
+        autoFreqBtn.classList.toggle('active', !!s.auto_freq);
+      }
 
-      if (s.fps > 0) statFps.innerText = s.fps.toFixed(1);
-      if (s.frame > 0) statFrame.innerText = s.frame;
+      if (s.detected_bpm > 0) {
+        bpmLabel.innerText = 'BPM: ' + Math.round(s.detected_bpm);
+      }
+      if (s.auto_gain) {
+        gainLabel.innerText = 'Gain: ' + Number(s.auto_gain).toFixed(1) + 'x';
+      }
+
+      const curScale = s.scale || (s.scale_type === 1 ? 'mel' : s.scale_type === 2 ? 'linear' : 'log');
+      scaleLabel.innerText = curScale === 'mel' ? 'Mel' : curScale === 'linear' ? 'Linear' : 'Logarithmic';
+      document.getElementById('scaleBtnLog').classList.toggle('active', curScale === 'log');
+      document.getElementById('scaleBtnMel').classList.toggle('active', curScale === 'mel');
+      document.getElementById('scaleBtnLin').classList.toggle('active', curScale === 'linear');
+
+      for (let i = 0; i <= 4; i++) {
+        const btn = document.getElementById('divBtn' + i);
+        if (btn) btn.classList.toggle('active', s.rhythm_division === i);
+      }
     }
 
-    function syncSlidersFromState() {
+    function syncSliders() {
       speedSlider.value = state.scanning_speed;
       decaySlider.value = state.decay_time;
       freqMinSlider.value = state.freq_min;
       freqMaxSlider.value = state.freq_max;
-      spanMinSlider.value = state.freq_range_low;
-      spanMaxSlider.value = state.freq_range_high;
       updateUI(state);
     }
 
@@ -709,8 +749,11 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           decay_time: parseFloat(state.decay_time),
           freq_min: parseFloat(state.freq_min),
           freq_max: parseFloat(state.freq_max),
-          freq_range_low: parseFloat(state.freq_range_low),
-          freq_range_high: parseFloat(state.freq_range_high)
+          scale: state.scale,
+          scale_type: parseInt(state.scale_type),
+          auto_speed: !!state.auto_speed,
+          rhythm_division: parseInt(state.rhythm_division),
+          auto_freq: !!state.auto_freq
         };
         const res = await fetch('/api/controls', {
           method: 'POST',
@@ -719,14 +762,23 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         });
         if (res.ok) {
           const data = await res.json();
-          statusBadge.className = 'badge badge-online';
-          statusBadge.innerText = 'ONLINE';
-          if (data.fps) statFps.innerText = Number(data.fps).toFixed(1);
-          if (data.frame) statFrame.innerText = data.frame;
+          connDot.className = 'conn-dot online';
+          if (data.detected_bpm) state.detected_bpm = data.detected_bpm;
+          if (data.auto_gain) state.auto_gain = data.auto_gain;
+          if (data.scanning_speed && state.auto_speed) {
+            state.scanning_speed = data.scanning_speed;
+            speedSlider.value = data.scanning_speed;
+          }
+          if (data.freq_min && state.auto_freq) {
+            state.freq_min = data.freq_min;
+            state.freq_max = data.freq_max;
+            freqMinSlider.value = data.freq_min;
+            freqMaxSlider.value = data.freq_max;
+          }
+          updateUI(state);
         }
       } catch (err) {
-        statusBadge.className = 'badge badge-offline';
-        statusBadge.innerText = 'DISCONNECTED';
+        connDot.className = 'conn-dot';
       } finally {
         isSending = false;
         if (pendingUpdate) {
@@ -736,83 +788,73 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       }
     }
 
-    function onSliderChange() {
+    speedSlider.addEventListener('input', () => {
       state.scanning_speed = parseFloat(speedSlider.value);
-      state.decay_time = parseFloat(decaySlider.value);
-      state.freq_min = parseFloat(freqMinSlider.value);
-      state.freq_max = parseFloat(freqMaxSlider.value);
-      state.freq_range_low = parseFloat(spanMinSlider.value);
-      state.freq_range_high = parseFloat(spanMaxSlider.value);
+      state.auto_speed = false;
+      autoSpeedBtn.classList.remove('active');
+      updateUI(state);
+      sendControls();
+    });
 
+    decaySlider.addEventListener('input', () => {
+      state.decay_time = parseFloat(decaySlider.value);
+      updateUI(state);
+      sendControls();
+    });
+
+    freqMinSlider.addEventListener('input', () => {
+      state.freq_min = parseFloat(freqMinSlider.value);
       if (state.freq_min >= state.freq_max) {
-        state.freq_max = state.freq_min + 100;
+        state.freq_max = state.freq_min + 50;
         freqMaxSlider.value = state.freq_max;
       }
-      if (state.freq_range_low >= state.freq_range_high) {
-        state.freq_range_high = Math.min(1.0, state.freq_range_low + 0.05);
-        spanMaxSlider.value = state.freq_range_high;
-      }
+      state.auto_freq = false;
+      autoFreqBtn.classList.remove('active');
+      updateUI(state);
+      sendControls();
+    });
 
+    freqMaxSlider.addEventListener('input', () => {
+      state.freq_max = parseFloat(freqMaxSlider.value);
+      if (state.freq_max <= state.freq_min) {
+        state.freq_min = Math.max(20, state.freq_max - 50);
+        freqMinSlider.value = state.freq_min;
+      }
+      state.auto_freq = false;
+      autoFreqBtn.classList.remove('active');
+      updateUI(state);
+      sendControls();
+    });
+
+    function setDecay(v) {
+      decaySlider.value = v;
+      state.decay_time = v;
       updateUI(state);
       sendControls();
     }
 
-    [speedSlider, decaySlider, freqMinSlider, freqMaxSlider, spanMinSlider, spanMaxSlider].forEach(el => {
-      el.addEventListener('input', onSliderChange);
-    });
-
-    function setSpeed(v) {
-      speedSlider.value = v;
-      onSliderChange();
-    }
-    function setDecay(v) {
-      decaySlider.value = v;
-      onSliderChange();
-    }
-    function setFreqBand(min, max) {
-      freqMinSlider.value = min;
-      freqMaxSlider.value = max;
-      onSliderChange();
+    function setScale(name) {
+      state.scale = name;
+      state.scale_type = name === 'mel' ? 1 : name === 'linear' ? 2 : 0;
+      updateUI(state);
+      sendControls();
     }
 
-    function applyPreset(name) {
-      if (name === 'default') {
-        state.scanning_speed = 0.40;
-        state.decay_time = 0.9950;
-        state.freq_min = 100;
-        state.freq_max = 10000;
-        state.freq_range_low = 0.0;
-        state.freq_range_high = 1.0;
-      } else if (name === 'sonar') {
-        state.scanning_speed = 0.15;
-        state.decay_time = 0.9980;
-        state.freq_min = 20;
-        state.freq_max = 500;
-        state.freq_range_low = 0.0;
-        state.freq_range_high = 1.0;
-      } else if (name === 'strobe') {
-        state.scanning_speed = 1.80;
-        state.decay_time = 0.9100;
-        state.freq_min = 60;
-        state.freq_max = 14000;
-        state.freq_range_low = 0.0;
-        state.freq_range_high = 1.0;
-      } else if (name === 'phosphor') {
-        state.scanning_speed = 0.25;
-        state.decay_time = 0.9990;
-        state.freq_min = 50;
-        state.freq_max = 12000;
-        state.freq_range_low = 0.0;
-        state.freq_range_high = 1.0;
-      } else if (name === 'matrix') {
-        state.scanning_speed = 0.90;
-        state.decay_time = 0.9800;
-        state.freq_min = 200;
-        state.freq_max = 8000;
-        state.freq_range_low = 0.1;
-        state.freq_range_high = 0.9;
-      }
-      syncSlidersFromState();
+    function toggleAutoSpeed() {
+      state.auto_speed = !state.auto_speed;
+      autoSpeedBtn.classList.toggle('active', state.auto_speed);
+      sendControls();
+    }
+
+    function setRhythmDiv(div) {
+      state.rhythm_division = div;
+      updateUI(state);
+      sendControls();
+    }
+
+    function toggleAutoFreq() {
+      state.auto_freq = !state.auto_freq;
+      autoFreqBtn.classList.toggle('active', state.auto_freq);
       sendControls();
     }
 
@@ -821,84 +863,36 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         const res = await fetch('/api/status');
         if (res.ok) {
           const data = await res.json();
-          statusBadge.className = 'badge badge-online';
-          statusBadge.innerText = 'ONLINE';
+          connDot.className = 'conn-dot online';
           if (!isSending) {
-            state.fps = data.fps;
-            state.frame = data.frame;
+            if (data.auto_speed) {
+              state.scanning_speed = data.scanning_speed;
+              speedSlider.value = data.scanning_speed;
+            }
+            if (data.auto_freq) {
+              state.freq_min = data.freq_min;
+              state.freq_max = data.freq_max;
+              freqMinSlider.value = data.freq_min;
+              freqMaxSlider.value = data.freq_max;
+            }
+            state.auto_speed = data.auto_speed;
+            state.auto_freq = data.auto_freq;
+            state.rhythm_division = data.rhythm_division;
+            state.detected_bpm = data.detected_bpm;
+            state.auto_gain = data.auto_gain;
+            state.scale = data.scale;
+            state.scale_type = data.scale_type;
             updateUI(state);
           }
         }
       } catch (err) {
-        statusBadge.className = 'badge badge-offline';
-        statusBadge.innerText = 'DISCONNECTED';
+        connDot.className = 'conn-dot';
       }
     }
 
-    // Live canvas radar visualization matching parameters
-    const canvas = document.getElementById('radarCanvas');
-    const ctx = canvas.getContext('2d');
-    let currentAngle = 0;
-    let lastTime = performance.now();
-
-    function drawRadar() {
-      const now = performance.now();
-      const dt = (now - lastTime) / 1000;
-      lastTime = now;
-
-      // Update radar angle based on scanning_speed
-      currentAngle += (state.scanning_speed * 2 * Math.PI) * dt;
-
-      const w = canvas.width;
-      const h = canvas.height;
-      const cx = w / 2;
-      const cy = h / 2;
-      const radius = w / 2 - 10;
-
-      // Fade canvas using decay_time
-      ctx.fillStyle = 'rgba(8, 16, 16, 0.08)';
-      ctx.fillRect(0, 0, w, h);
-
-      // Concentric circles
-      ctx.strokeStyle = 'rgba(0, 255, 136, 0.15)';
-      ctx.lineWidth = 1;
-      for (let r = radius / 4; r <= radius; r += radius / 4) {
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, 2 * Math.PI);
-        ctx.stroke();
-      }
-
-      // Crosshairs
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - radius);
-      ctx.lineTo(cx, cy + radius);
-      ctx.moveTo(cx - radius, cy);
-      ctx.lineTo(cx + radius, cy);
-      ctx.stroke();
-
-      // Radar sweep beam
-      const beamX = cx + Math.cos(currentAngle) * radius;
-      const beamY = cy + Math.sin(currentAngle) * radius;
-
-      const grad = ctx.createRadialGradient(cx, cy, 5, cx, cy, radius);
-      grad.addColorStop(0, 'rgba(0, 255, 136, 0.9)');
-      grad.addColorStop(1, 'rgba(0, 229, 255, 0.3)');
-
-      ctx.strokeStyle = grad;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(beamX, beamY);
-      ctx.stroke();
-
-      requestAnimationFrame(drawRadar);
-    }
-
-    // Initialize
-    syncSlidersFromState();
+    syncSliders();
     pollStatus();
-    setInterval(pollStatus, 1500);
-    requestAnimationFrame(drawRadar);
+    setInterval(pollStatus, 1200);
   </script>
 </body>
 </html>
