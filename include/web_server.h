@@ -43,6 +43,14 @@ struct RadarConfig {
     std::atomic<bool> autoFreq{false};
     std::atomic<float> autoGain{1.0f};
 
+    // Waveform visualization options:
+    // 0 = Off / Spectrogram only
+    // 1 = Auto (switch to waveform when rhythm is not established)
+    // 2 = Always Waveform
+    std::atomic<int> waveformMode{1};
+    std::atomic<bool> rhythmEstablished{false};
+    mutable std::atomic<bool> waveformActive{true};
+
     // NCA weight perturbation controls
     std::atomic<float> ncaPerturb{0.0f};      // 0.0 (unperturbed) to 1.0 (heavy perturbation)
     std::atomic<float> ncaSeed{0.0f};         // Mutation seed
@@ -55,7 +63,23 @@ struct RadarConfig {
         return "log";
     }
 
+    std::string waveformModeName() const {
+        int m = waveformMode.load();
+        if (m == 0) return "off";
+        if (m == 2) return "always";
+        return "auto";
+    }
+
+    bool isWaveformActive() const {
+        int m = waveformMode.load();
+        if (m == 2) return true;
+        if (m == 0) return false;
+        return !rhythmEstablished.load();
+    }
+
     std::string toJson() const {
+        bool active = isWaveformActive();
+        waveformActive.store(active);
         std::ostringstream ss;
         ss << std::fixed << std::setprecision(4);
         ss << "{\n";
@@ -67,6 +91,10 @@ struct RadarConfig {
         ss << "  \"freq_range_high\": " << freqRangeMax.load() << ",\n";
         ss << "  \"scale_type\": " << scaleType.load() << ",\n";
         ss << "  \"scale\": \"" << scaleName() << "\",\n";
+        ss << "  \"waveform_mode\": " << waveformMode.load() << ",\n";
+        ss << "  \"waveform_mode_name\": \"" << waveformModeName() << "\",\n";
+        ss << "  \"rhythm_established\": " << (rhythmEstablished.load() ? "true" : "false") << ",\n";
+        ss << "  \"waveform_active\": " << (active ? "true" : "false") << ",\n";
         ss << "  \"auto_speed\": " << (autoSpeed.load() ? "true" : "false") << ",\n";
         ss << "  \"rhythm_division\": " << rhythmDivision.load() << ",\n";
         ss << "  \"detected_bpm\": " << detectedBpm.load() << ",\n";
@@ -407,6 +435,19 @@ private:
                 }
             }
 
+            // Waveform mode setting (0: off, 1: auto, 2: always)
+            if (extractJsonString(body, "waveform_mode", strVal)) {
+                if (strVal == "auto") m_config.waveformMode.store(1);
+                else if (strVal == "always" || strVal == "on" || strVal == "waveform") m_config.waveformMode.store(2);
+                else if (strVal == "off" || strVal == "spectrogram") m_config.waveformMode.store(0);
+                m_config.waveformActive.store(m_config.isWaveformActive());
+            } else if (extractJsonInt(body, "waveform_mode", intVal)) {
+                if (intVal >= 0 && intVal <= 2) {
+                    m_config.waveformMode.store(intVal);
+                    m_config.waveformActive.store(m_config.isWaveformActive());
+                }
+            }
+
             // NCA weight perturbation controls
             if (extractJsonFloat(body, "nca_perturb", val)) {
                 if (val >= 0.0f && val <= 2.0f) {
@@ -646,6 +687,23 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       </div>
     </div>
 
+    <!-- Display & Waveform Mode -->
+    <div class="section">
+      <div class="section-head">
+        <span class="section-title">Display & Waveform Mode</span>
+        <span id="wfStatusLabel" class="val" style="color:var(--accent-cyan);">Waveform (Unsynced)</span>
+      </div>
+      <div class="btn-row">
+        <button class="btn active" id="wfBtnAuto" onclick="setWaveformMode('auto')" title="Switch to center-originating waveform when rhythm is not established">Auto (Fallback)</button>
+        <button class="btn" id="wfBtnAlways" onclick="setWaveformMode('always')" title="Always show center-originating waveform">Always Waveform</button>
+        <button class="btn" id="wfBtnOff" onclick="setWaveformMode('off')" title="Always show circular spectrogram">Spectrogram Only</button>
+      </div>
+      <div class="meta-row" style="margin-top:2px;">
+        <span id="rhythmStatusLabel">Rhythm: Unestablished</span>
+        <span id="activeDisplayLabel">Active: Waveform (Center)</span>
+      </div>
+    </div>
+
     <!-- Decay Time -->
     <div class="section">
       <div class="section-head">
@@ -743,6 +801,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       detected_bpm: 120.0,
       auto_freq: false,
       auto_gain: 1.0,
+      waveform_mode: 1,
+      waveform_mode_name: "auto",
+      rhythm_established: false,
+      waveform_active: true,
       nca_perturb: 0.0,
       nca_seed: 0.0,
       nca_step_scale: 1.0
@@ -799,6 +861,45 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         gainLabel.innerText = 'Gain: ' + Number(s.auto_gain).toFixed(1) + 'x';
       }
 
+      // Waveform Mode & Rhythm status UI
+      const wfMode = s.waveform_mode !== undefined ? s.waveform_mode : (s.waveform_mode_name === 'always' ? 2 : s.waveform_mode_name === 'off' ? 0 : 1);
+      const wfBtnAuto = document.getElementById('wfBtnAuto');
+      const wfBtnAlways = document.getElementById('wfBtnAlways');
+      const wfBtnOff = document.getElementById('wfBtnOff');
+      if (wfBtnAuto) wfBtnAuto.classList.toggle('active', wfMode === 1);
+      if (wfBtnAlways) wfBtnAlways.classList.toggle('active', wfMode === 2);
+      if (wfBtnOff) wfBtnOff.classList.toggle('active', wfMode === 0);
+
+      const rhythmEstablished = !!s.rhythm_established;
+      const isWaveActive = !!s.waveform_active;
+
+      const rStatus = document.getElementById('rhythmStatusLabel');
+      if (rStatus) {
+        if (rhythmEstablished) {
+          rStatus.innerText = 'Rhythm: Locked (' + Math.round(s.detected_bpm || 120) + ' BPM)';
+          rStatus.style.color = 'var(--accent)';
+        } else {
+          rStatus.innerText = 'Rhythm: Unestablished';
+          rStatus.style.color = 'var(--text-muted)';
+        }
+      }
+
+      const activeDisp = document.getElementById('activeDisplayLabel');
+      const wfStatus = document.getElementById('wfStatusLabel');
+      if (activeDisp && wfStatus) {
+        if (isWaveActive) {
+          activeDisp.innerText = 'Active: Waveform (Center)';
+          activeDisp.style.color = 'var(--accent-cyan)';
+          wfStatus.innerText = (wfMode === 1) ? 'Waveform (Unsynced)' : 'Waveform (Always)';
+          wfStatus.style.color = 'var(--accent-cyan)';
+        } else {
+          activeDisp.innerText = 'Active: Spectrogram';
+          activeDisp.style.color = 'var(--accent)';
+          wfStatus.innerText = (wfMode === 1) ? 'Spectrogram (Synced)' : 'Spectrogram Only';
+          wfStatus.style.color = 'var(--accent)';
+        }
+      }
+
       const curScale = s.scale || (s.scale_type === 1 ? 'mel' : s.scale_type === 2 ? 'linear' : 'log');
       scaleLabel.innerText = curScale === 'mel' ? 'Mel' : curScale === 'linear' ? 'Linear' : 'Logarithmic';
       document.getElementById('scaleBtnLog').classList.toggle('active', curScale === 'log');
@@ -841,6 +942,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           freq_max: parseFloat(state.freq_max),
           scale: state.scale,
           scale_type: parseInt(state.scale_type),
+          waveform_mode: state.waveform_mode_name,
           auto_speed: !!state.auto_speed,
           rhythm_division: parseInt(state.rhythm_division),
           auto_freq: !!state.auto_freq,
@@ -963,6 +1065,13 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       sendControls();
     }
 
+    function setWaveformMode(mode) {
+      state.waveform_mode_name = mode;
+      state.waveform_mode = (mode === 'always' ? 2 : mode === 'off' ? 0 : 1);
+      updateUI(state);
+      sendControls();
+    }
+
     function toggleAutoSpeed() {
       state.auto_speed = !state.auto_speed;
       autoSpeedBtn.classList.toggle('active', state.auto_speed);
@@ -1032,6 +1141,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
             state.auto_gain = data.auto_gain;
             state.scale = data.scale;
             state.scale_type = data.scale_type;
+            if (data.waveform_mode !== undefined) state.waveform_mode = data.waveform_mode;
+            if (data.waveform_mode_name !== undefined) state.waveform_mode_name = data.waveform_mode_name;
+            if (data.rhythm_established !== undefined) state.rhythm_established = data.rhythm_established;
+            if (data.waveform_active !== undefined) state.waveform_active = data.waveform_active;
             if (data.nca_perturb !== undefined) {
               state.nca_perturb = data.nca_perturb;
               ncaSlider.value = data.nca_perturb;

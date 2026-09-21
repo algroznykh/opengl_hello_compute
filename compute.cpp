@@ -137,6 +137,7 @@ const int MUSICAL_BINS = 88 * 4; // Fixed number of bins for musical scale
 std::vector<float> audioBuffer(BUFFER_SIZE);
 std::vector<float> fftMagnitudes(MUSICAL_BINS); // Musical scale distributed frequencies
 std::vector<float> rawFFTMagnitudes(FFT_SIZE/2); // Raw FFT data for interpolation
+std::vector<float> waveformSamples(MUSICAL_BINS); // Time-domain waveform samples for center-originating visualizer
 std::mutex audioMutex;
 bool audioRunning = true;  // Changed to true for continuous operation
 
@@ -292,6 +293,48 @@ void audioProcessingLoop() {
             }
         }
 
+        // Determine if musical rhythm is established:
+        // 1. Have at least 3 tracked beats in history
+        // 2. Consistent interval deviation (< 22% of median interval)
+        // 3. Audible energy present (> 0.0025)
+        // 4. Beat hasn't gone stale/paused (timeSinceBeat < 1.75 * medianInterval)
+        float currentMedian = 60.0f / std::max(estimatedBpm, 40.0f);
+        if (recentBeatIntervals.size() >= 3) {
+            std::vector<float> sortedIntervals = recentBeatIntervals;
+            std::sort(sortedIntervals.begin(), sortedIntervals.end());
+            currentMedian = sortedIntervals[sortedIntervals.size() / 2];
+            while (currentMedian > 0.85f) currentMedian *= 0.5f;
+            while (currentMedian < 0.35f) currentMedian *= 2.0f;
+        }
+
+        if (timeSinceBeat > 2.5f && !recentBeatIntervals.empty()) {
+            recentBeatIntervals.clear();
+        }
+
+        bool regularBeat = false;
+        if (recentBeatIntervals.size() >= 3) {
+            float devSum = 0.0f;
+            for (float iv : recentBeatIntervals) {
+                float normIv = iv;
+                while (normIv > 1.35f * currentMedian) normIv *= 0.5f;
+                while (normIv < 0.65f * currentMedian) normIv *= 2.0f;
+                devSum += std::abs(normIv - currentMedian);
+            }
+            float avgDev = devSum / recentBeatIntervals.size();
+            regularBeat = (avgDev < 0.22f * currentMedian);
+        }
+
+        bool beatCurrentlyLocked = (recentBeatIntervals.size() >= 3) && regularBeat &&
+                                  (totalEnergy > 0.0025f) && (timeSinceBeat < 1.75f * currentMedian);
+        static float rhythmConfidence = 0.0f;
+        if (beatCurrentlyLocked) {
+            rhythmConfidence = std::min(1.0f, rhythmConfidence + 0.10f);
+        } else {
+            rhythmConfidence = std::max(0.0f, rhythmConfidence - 0.03f);
+        }
+        bool rhythmEstablished = (rhythmConfidence > 0.5f);
+        g_radarConfig.rhythmEstablished.store(rhythmEstablished);
+
         if (g_radarConfig.autoSpeed.load()) {
             int div = g_radarConfig.rhythmDivision.load();
             float divFactor = 240.0f; // Default: 1 Bar = BPM / 240 rev/s
@@ -394,6 +437,15 @@ void audioProcessingLoop() {
             } else {
                 fftMagnitudes[i] = 0.0f;
             }
+        }
+
+        // Resample time-domain audioBuffer (1024) to waveformSamples (352)
+        for (int i = 0; i < MUSICAL_BINS; i++) {
+            float srcIdx = (float)i * (BUFFER_SIZE - 1) / (MUSICAL_BINS - 1);
+            int i0 = (int)srcIdx;
+            int i1 = std::min(i0 + 1, BUFFER_SIZE - 1);
+            float frac = srcIdx - i0;
+            waveformSamples[i] = audioBuffer[i0] * (1.0f - frac) + audioBuffer[i1] * frac;
         }
     }
 }
@@ -582,7 +634,7 @@ int main(int argc, char* argv[]) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, TEXTURE_WIDTH, TEXTURE_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
     glBindImageTexture(0, outputTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
 
-    // Create audio texture for FFT data
+    // Create audio texture for FFT data and waveform data (row 0 = FFT, row 1 = waveform)
     glGenTextures(1, &audioTexture);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, audioTexture);
@@ -590,7 +642,7 @@ int main(int argc, char* argv[]) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, MUSICAL_BINS, 1, 0, GL_RED, GL_FLOAT, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, MUSICAL_BINS, 2, 0, GL_RED, GL_FLOAT, NULL);
     glBindImageTexture(1, audioTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32F);
 
     // Create camera texture
@@ -772,6 +824,15 @@ int main(int argc, char* argv[]) {
             while (radarPhase >= 1.0f) radarPhase -= 1.0f;
             while (radarPhase < 0.0f) radarPhase += 1.0f;
 
+            // Compute waveform mix based on waveform mode and rhythm established state
+            bool isWaveActive = g_radarConfig.isWaveformActive();
+            g_radarConfig.waveformActive.store(isWaveActive);
+
+            float targetMix = isWaveActive ? 1.0f : 0.0f;
+            static float currentWaveformMix = 1.0f;
+            float blendStep = std::min(1.0f, 6.0f * deltaTime);
+            currentWaveformMix += (targetMix - currentWaveformMix) * blendStep;
+
             // Set radar shader controls from web interface
             currentComputeShader->setFloat("scan_phase", radarPhase);
             currentComputeShader->setFloat("scan_speed", curSpeed);
@@ -783,6 +844,7 @@ int main(int argc, char* argv[]) {
             currentComputeShader->setFloat("nca_perturb", g_radarConfig.ncaPerturb.load());
             currentComputeShader->setFloat("nca_seed", g_radarConfig.ncaSeed.load());
             currentComputeShader->setFloat("nca_step_scale", g_radarConfig.ncaStepScale.load());
+            currentComputeShader->setFloat("waveform_mix", currentWaveformMix);
             
             // Update uniform buffer with frame counter and time
             frameCounter++;
@@ -792,12 +854,13 @@ int main(int argc, char* argv[]) {
             glBindBuffer(GL_UNIFORM_BUFFER, uniformBuffer);
             glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &uniformData);
 
-            // Update audio texture with FFT data (with mutex protection)
+            // Update audio texture with FFT data (row 0) and waveform data (row 1) (with mutex protection)
             {
                 std::lock_guard<std::mutex> lock(audioMutex);
                 glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D, audioTexture);
                 glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, MUSICAL_BINS, 1, GL_RED, GL_FLOAT, fftMagnitudes.data());
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 1, MUSICAL_BINS, 1, GL_RED, GL_FLOAT, waveformSamples.data());
             }
 
             // Update camera texture with camera data (with mutex protection)

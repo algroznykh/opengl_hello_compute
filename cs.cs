@@ -21,6 +21,7 @@ uniform float scan_phase;
 uniform float nca_perturb;
 uniform float nca_seed;
 uniform float nca_step_scale;
+uniform float waveform_mix;
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
@@ -448,30 +449,81 @@ void main() {
     angleDiff = min(angleDiff, 1.0 - angleDiff);
     float intensity = angleDiff < 0.012 ? 1.0 : 0.0;
     vec3 spectrum = color * intensity * 2.;
-    vec3 finalColor ;
+
+    // --- Center-Originating Waveform Visualization ---
+    vec3 waveformColor = vec3(0.0);
+    float wfMix = clamp(waveform_mix, 0.0, 1.0);
+    if (wfMix > 0.0001) {
+        float rNorm = clamp(radius / 0.85, 0.0, 1.0);
+
+        // Sample waveform along radius (emanating from center r=0 outward to perimeter)
+        int waveRIdx = int(rNorm * (MUSICAL_BINS - 1.0));
+        float waveValR = imageLoad(audioTexture, ivec2(waveRIdx, 1)).r;
+        float waveValRClamped = clamp(waveValR * 3.0, -1.0, 1.0);
+
+        // Sample waveform along circular angle (360 degrees)
+        int waveAIdx = int(clamp(angle, 0.0, 1.0) * (MUSICAL_BINS - 1.0));
+        float waveValA = imageLoad(audioTexture, ivec2(waveAIdx, 1)).r;
+        float waveValAClamped = clamp(waveValA * 3.0, -1.0, 1.0);
+
+        // 1. Center-Anchored Undulating Radar Wave Beam
+        // At r = 0, angular displacement is strictly 0.0 (anchored at center).
+        // As r increases, the beam ripples with the audio waveform.
+        float angleDisp = waveValRClamped * 0.08 * pow(rNorm, 0.85);
+        float modulatedBeamAngle = fract(s + angleDisp);
+        float wAngleDiff = abs(angle - modulatedBeamAngle);
+        wAngleDiff = min(wAngleDiff, 1.0 - wAngleDiff);
+        float arcDist = wAngleDiff * 6.2831853 * max(radius, 0.005);
+        float beamLine = smoothstep(0.016, 0.002, arcDist);
+        vec3 beamGlow = vec3(0.35, 0.88, 1.0) * beamLine * 2.8;
+
+        // 2. Center-Radiating Waveform Tendrils / Starburst
+        // Emanates from center (r = 0) out to waveform amplitude reach
+        float waveReach = 0.05 + 0.65 * abs(waveValAClamped);
+        float inRay = smoothstep(waveReach, waveReach * 0.78, radius);
+        float crest = smoothstep(0.018, 0.0, abs(radius - waveReach));
+        float centerFade = pow(1.0 - rNorm, 1.15); // Brightest at center origin
+        float filamentIntensity = (inRay * centerFade * 0.75 + crest * 1.6) * abs(waveValAClamped);
+        vec3 filamentColor = mix(vec3(0.12, 0.55, 1.0), vec3(0.85, 0.98, 1.0), crest) * filamentIntensity * 1.9;
+
+        // 3. Central Core Energy Origin (r -> 0)
+        // Pulsing nucleus at the exact center of the spectrogram
+        float coreRadius = 0.09;
+        float coreDist = radius / coreRadius;
+        float coreGlow = smoothstep(1.0, 0.0, coreDist);
+        float centerPulse = coreGlow * (0.9 + 2.8 * abs(waveValRClamped));
+        vec3 coreColor = vec3(0.65, 0.92, 1.0) * centerPulse;
+
+        // 4. Concentric Audio Wave Ripples Expanding from Center
+        float ripplePhase = radius * 32.0 - time * 7.5 - waveValRClamped * 3.5;
+        float ripple = sin(ripplePhase) * 0.5 + 0.5;
+        ripple = pow(ripple, 4.0) * (1.0 - rNorm) * abs(waveValRClamped);
+        vec3 rippleColor = vec3(0.2, 0.65, 1.0) * ripple * 1.5;
+
+        // 5. Circular Oscilloscope Orbit around center
+        float orbitDist = abs(radius - (0.28 + 0.14 * waveValAClamped));
+        float orbitRing = smoothstep(0.014, 0.002, orbitDist);
+        vec3 orbitColor = vec3(0.45, 0.88, 1.0) * orbitRing * 1.6;
+
+        // Combine all waveform elements, masked to circular spectrogram area
+        waveformColor = (beamGlow + filamentColor + coreColor + rippleColor + orbitColor) * smoothstep(0.88, 0.82, radius);
+    }
+
+    // Blend between circular frequency spectrogram and center-originating waveform
+    vec3 activeAudioSignal = mix(spectrum, waveformColor, wfMix);
+    vec3 finalColor;
     
-    
-    //vec4 back = imageLoad(backbuffer, texelCoord + ivec2(1, 0));
     vec4 back = imageLoad(backbuffer, texelCoord); 
-    //vec4 back = sampleBilinear(backbuffer, rotatedUV);
-    //back *= angle < .9 ? 1.: 1. - angle;
-    //back *= angle < 1. ? 1.: 1. - angle;
-    //back += angle + fract(time) < 1.? vec4(spectrum, 1.) : vec4(0.);
-    //back += vec4(spectrum, 1.);
-    back = max(back,vec4(spectrum,1.));
+    back = max(back, vec4(activeAudioSignal, 1.0));
 
     // Radar decay persistence control (defaults to 0.995)
     float effectiveDecay = (decay_time > 0.0001) ? clamp(decay_time, 0.5, 0.9999) : 0.995;
     back *= effectiveDecay;
-    //back += vec4(spectrum, 1.) * vec4(.99, .98, .97, 1.);
-    //back *= vec4(.9995, .99, .9995, 1.);
     imageStore(backbuffer, texelCoord, back);
 
-    //finalColor +=1. *   sampleLoG(backbuffer, uv).rgb;
-    //finalColor *= .15 * sampleBilinear(backbuffer, uv).rgb;
     finalColor += back.rgb;
-
-    //finalColor *= length(finalColor) > .5 ? 1. : 0.;
+    // Add direct waveform highlight for crisp, immediate center-originating luminescence
+    finalColor += waveformColor * wfMix * 0.75;
     
     vec4 value = vec4(finalColor, 1.0);
     value *= 1. - radius;

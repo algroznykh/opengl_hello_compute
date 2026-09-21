@@ -113,7 +113,43 @@ def main():
     assert res["rhythm_division"] == 2
     print(f"  -> Auto speed & auto freq enabled. Detected BPM: {res.get('detected_bpm')}")
 
-    print("\nALL CONTROLLER & NCA PERTURBATION TESTS PASSED SUCCESSFULLY!")
+    print("[7] Testing Waveform Visualization Modes (Auto fallback, Always, Off)...")
+    # Test setting waveform_mode to "auto"
+    res = post_json("/api/controls", {"waveform_mode": "auto"})
+    assert res["waveform_mode"] == 1, f"Expected 1, got {res['waveform_mode']}"
+    assert res["waveform_mode_name"] == "auto", f"Expected auto, got {res['waveform_mode_name']}"
+    assert "rhythm_established" in res
+    assert "waveform_active" in res
+    print(f"  -> Waveform mode 'auto' verified. rhythm_established={res['rhythm_established']}, waveform_active={res['waveform_active']}")
+
+    # Test setting waveform_mode to "always"
+    res = post_json("/api/controls", {"waveform_mode": "always"})
+    assert res["waveform_mode"] == 2, f"Expected 2, got {res['waveform_mode']}"
+    assert res["waveform_mode_name"] == "always", f"Expected always, got {res['waveform_mode_name']}"
+    assert res["waveform_active"] is True
+    print("  -> Waveform mode 'always' verified (waveform_active=True).")
+
+    # Test setting waveform_mode to "off"
+    res = post_json("/api/controls", {"waveform_mode": "off"})
+    assert res["waveform_mode"] == 0, f"Expected 0, got {res['waveform_mode']}"
+    assert res["waveform_mode_name"] == "off", f"Expected off, got {res['waveform_mode_name']}"
+    assert res["waveform_active"] is False
+    print("  -> Waveform mode 'off' verified (waveform_active=False).")
+
+    # Test integer mode
+    res = post_json("/api/controls", {"waveform_mode": 1})
+    assert res["waveform_mode"] == 1 and res["waveform_mode_name"] == "auto"
+    print("  -> Waveform integer mode 1 verified.")
+
+    # Check that HTML contains waveform controls
+    html, _ = get("/")
+    assert "setWaveformMode" in html
+    assert "wfBtnAuto" in html
+    assert "wfBtnAlways" in html
+    assert "wfBtnOff" in html
+    print("  -> Minimal HTML interface contains all waveform controls and status indicators.")
+
+    print("\nALL CONTROLLER, NCA PERTURBATION & WAVEFORM TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     main()
