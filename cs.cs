@@ -18,10 +18,8 @@ uniform float freq_min_hz;
 uniform float freq_max_hz;
 uniform int scale_type;
 uniform float scan_phase;
-uniform float nca_perturb;
-uniform float nca_seed;
 uniform float nca_step_scale;
-uniform float waveform_mix;
+uniform float nca_topology; // 0.0 = Cartesian, 1.0 = Polar (pole in center)
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
@@ -58,112 +56,16 @@ layout(std430, binding = 10) restrict buffer AngleBuffer {
     float angles[];
 };
 
+// Weight buffer for Human-Assisted Genetic Algorithm - binding 11
+layout(std430, binding = 11) restrict buffer NcaWeightBuffer {
+    float W_weights[576];
+    float B_biases[12];
+};
+
 // Constants
 const uint N = 12u;
 const float S = 5000.0;
-const int[12] B = int[12](-332,-212,-353,566,-86,837,510,-339,373,414,-787,-712);
-
-// Weight matrix W (48x12)
-const int[48][12] W = int[48][12](
-    int[12](-816,142,-40,142,-119,0,758,70,99,-149,-165,-141),
-    int[12](-24,-1182,-67,438,267,190,358,113,191,-64,-196,-263),
-    int[12](10,170,-785,-49,98,-39,733,-75,210,-161,-112,-107),
-    int[12](60,-183,158,-966,352,-336,588,-356,123,-531,-364,-201),
-    int[12](-11,-89,-77,-259,-2788,276,46,56,72,-28,-179,66),
-    int[12](24,-43,-1,463,-452,-2262,95,59,-51,3,-222,-216),
-    int[12](-162,158,-113,19,-26,-66,-1856,49,-27,-302,-99,-366),
-    int[12](58,9,203,-20,-200,-76,-28,-2600,-206,29,127,358),
-    int[12](-68,-222,-143,-254,-287,157,255,400,-3107,-87,373,-420),
-    int[12](-59,-75,1,-464,19,82,-26,181,-187,-1802,124,-557),
-    int[12](191,166,218,-398,22,131,136,552,301,-273,-1490,-123),
-    int[12](188,142,283,-677,143,84,-154,-80,212,-34,-69,-1619),
-    int[12](257,-95,-4,62,-3,36,29,-17,16,12,34,6),
-    int[12](-79,218,-137,-68,-23,-3,63,-20,-12,-14,-1,16),
-    int[12](-97,-42,211,91,-3,26,42,12,-13,-40,-5,37),
-    int[12](-106,-5,-160,673,-500,177,219,41,-167,-479,-273,-478),
-    int[12](-137,-144,-138,-30,402,-100,20,59,-57,-11,-16,93),
-    int[12](144,174,145,84,14,128,-180,-234,-127,-221,59,192),
-    int[12](8,4,6,76,-92,-343,1,-6,97,-20,-50,-41),
-    int[12](-38,-38,-24,42,158,-184,-28,-130,70,-48,28,-43),
-    int[12](-178,-190,-164,-131,116,-15,-154,-93,229,57,33,193),
-    int[12](-52,-84,-60,-126,86,-50,32,210,-71,268,123,-203),
-    int[12](213,184,191,-65,162,-25,128,445,80,69,432,-191),
-    int[12](-124,-117,-125,-59,-130,-84,-42,173,261,14,5,-278),
-    int[12](51,-269,-169,-412,300,-62,148,-72,219,-66,335,492),
-    int[12](-157,83,-128,-397,144,-98,369,17,183,-123,392,490),
-    int[12](-193,-370,35,-306,228,-5,155,49,169,-15,384,480),
-    int[12](198,172,203,-172,179,92,127,183,450,-2,-66,222),
-    int[12](48,39,62,169,1160,-98,174,32,-15,100,117,65),
-    int[12](-36,-63,-54,279,-132,-1232,-7,130,90,37,-20,-38),
-    int[12](14,54,46,-129,34,85,-480,100,-83,-325,-78,107),
-    int[12](-228,-276,-217,-255,-117,-148,0,1,-156,257,164,-8),
-    int[12](-27,-95,-41,-34,-35,33,150,269,-1215,-116,299,-217),
-    int[12](-294,-409,-300,-267,104,-40,203,101,133,-150,368,8),
-    int[12](139,154,113,27,19,274,103,150,217,174,-293,300),
-    int[12](82,39,56,-211,-121,-44,-61,557,-982,-167,358,-339),
-    int[12](-32,29,20,-6,-28,-19,21,1,0,21,-23,-2),
-    int[12](13,-12,38,28,-47,32,-42,38,-37,-14,-27,-65),
-    int[12](43,5,-36,-21,10,-21,9,15,-34,-19,-16,-30),
-    int[12](528,533,528,-52,-199,-120,-6,140,211,-186,88,29),
-    int[12](25,9,27,-71,30,-8,-6,73,31,44,213,-1),
-    int[12](227,224,226,70,71,-43,101,100,168,-405,69,-83),
-    int[12](-142,-184,-148,-169,-115,119,25,26,266,296,296,218),
-    int[12](118,164,96,279,-120,98,41,30,233,-190,-124,204),
-    int[12](-73,-95,-63,-89,65,-13,-5,-50,77,-51,38,87),
-    int[12](-55,-71,-42,-44,29,6,38,-174,77,5,-45,112),
-    int[12](148,73,136,-81,-113,12,226,133,-417,-305,226,-81),
-    int[12](100,152,115,28,-229,26,-272,-200,528,-81,-102,235)
-);
-
-// Hypergraph tree nodes (origin at (0, 0) in center of circular spectrogram)
-const vec2[24] TREE_NODES = vec2[24](
-    vec2( 0.00,  0.00), // 0: Root origin at center of spectrogram
-    vec2( 0.02,  0.13), // 1: Main trunk
-    vec2(-0.11,  0.27), // 2: Left bough fork
-    vec2( 0.12,  0.28), // 3: Right bough fork (dominant)
-    vec2(-0.25,  0.36), // 4: Left outer limb
-    vec2(-0.06,  0.43), // 5: Left inner limb
-    vec2( 0.08,  0.47), // 6: Right inner limb
-    vec2( 0.27,  0.41), // 7: Right outer limb
-    vec2(-0.38,  0.44), // 8: Left outer branch tip
-    vec2(-0.31,  0.56), // 9: Left-center secondary twig
-    vec2(-0.17,  0.62), // 10: Center-left canopy twig
-    vec2(-0.03,  0.59), // 11: Central crest fork
-    vec2( 0.06,  0.69), // 12: High central twig
-    vec2( 0.21,  0.64), // 13: Upper-right canopy twig
-    vec2( 0.38,  0.55), // 14: Right-center secondary twig
-    vec2( 0.46,  0.39), // 15: Right outer branch tip
-    vec2(-0.26,  0.72), // 16: Left high canopy leaf
-    vec2( 0.13,  0.78), // 17: Summit apex leaf
-    vec2( 0.33,  0.72), // 18: Right high canopy leaf
-    vec2(-0.10, -0.08), // 19: Left basal root fork
-    vec2( 0.10, -0.07), // 20: Right basal root fork
-    vec2(-0.18, -0.15), // 21: Left root tip
-    vec2( 0.18, -0.14), // 22: Right root tip
-    vec2( 0.00, -0.06)  // 23: Taproot center
-);
-
-// 28 Edges: 23 Tree branches + 5 Hypergraph cross-chords
-const ivec2[28] TREE_EDGES = ivec2[28](
-    // Trunk & basal roots (originating at center 0, 0)
-    ivec2(0, 1), ivec2(0, 19), ivec2(19, 21), ivec2(0, 20), ivec2(20, 22), ivec2(0, 23),
-    // Primary boughs
-    ivec2(1, 2), ivec2(1, 3),
-    // Secondary limbs
-    ivec2(2, 4), ivec2(2, 5),
-    ivec2(3, 6), ivec2(3, 7),
-    // Tertiary branches
-    ivec2(4, 8), ivec2(4, 9),
-    ivec2(5, 10), ivec2(5, 11),
-    ivec2(6, 12), ivec2(6, 13),
-    ivec2(7, 14), ivec2(7, 15),
-    // Canopy apex tips
-    ivec2(9, 16), ivec2(12, 17), ivec2(13, 18),
-    // Hypergraph cross-chords (connecting branch clusters across space)
-    ivec2(8, 10), ivec2(10, 12), ivec2(12, 14), ivec2(13, 15), ivec2(4, 7)
-);
-
-uint D=1; // dilation
+uint D = 1; // dilation
 
 // Simulation size
 uint FACTOR = 3;
@@ -268,24 +170,37 @@ float lap(uint c) {
 }
 
 
+float raw_sobx(uint c) {
+    return (R(-1, 1, c) + R(-1, 0, c)*2.0 + R(-1,-1, c))
+         - (R( 1, 1, c) + R( 1, 0, c)*2.0 + R( 1,-1, c));
+}
+
+float raw_soby(uint c) {
+    return (R( 1, 1, c) + R( 0, 1, c)*2.0 + R(-1, 1, c))
+         - (R( 1,-1, c) + R( 0,-1, c)*2.0 + R(-1,-1, c));
+}
+
+// Polar rotated Sobel filters w.r.t. coordinate (pole in center)
 float sobx(uint c) {
-    // return R(-1, 1, c) + R(-1, 0, c)*2.0 + R(-1,-1, c)
-    //       -R( 1, 1, c) - R( 1, 0, c)*2.0 - R( 1,-1, c);
-    mat3 f = mat3(1, 2, 1, 
-                  0, 0, 0, 
-                  -1, -2, -1);
-
-    // f = rot(0) * f; 
-
-    float res = f[0][0] * R(-1, 1, c) + f[1][0] * R(-1, 0, c) + f[2][0] * R(-1,-1, c)
-              + f[0][1] * R(0, 1, c) + f[1][1] * R(0, 0, c) + f[2][1] * R(0, -1, c)   
-              + f[0][2] * R( 1, 1, c) + f[1][2] * R( 1, 0, c) + f[2][2] * R( 1,-1, c);
-    return res;
+    if (nca_topology < 0.001) {
+        return raw_sobx(c);
+    }
+    vec2 caCenter = vec2(float(SW), float(SH)) * 0.5;
+    vec2 caDiff = vec2(current_index) - caCenter;
+    float caAngle = atan(caDiff.y, caDiff.x);
+    float phi = caAngle * nca_topology;
+    return cos(phi) * raw_sobx(c) + sin(phi) * raw_soby(c);
 }
 
 float soby(uint c) {
-    return R( 1, 1, c) + R( 0, 1, c)*2.0 + R(-1, 1, c)
-          -R( 1,-1, c) - R( 0,-1, c)*2.0 - R(-1,-1, c);
+    if (nca_topology < 0.001) {
+        return raw_soby(c);
+    }
+    vec2 caCenter = vec2(float(SW), float(SH)) * 0.5;
+    vec2 caDiff = vec2(current_index) - caCenter;
+    float caAngle = atan(caDiff.y, caDiff.x);
+    float phi = caAngle * nca_topology;
+    return -sin(phi) * raw_sobx(c) + cos(phi) * raw_soby(c);
 }
 
 float[12] update(float[12] xs, float[12] ps) {
@@ -298,38 +213,14 @@ float[12] update(float[12] xs, float[12] ps) {
         hs[i+N*3u] = abs(ps[i]);
     }
 
-    // Do 1x1 conv with homeostatic, zero-mean weight perturbation
+    // Do 1x1 conv with genetic algorithm dynamic weights from SSBO binding 11
     float[12] y;
     float effectiveStepScale = clamp((nca_step_scale > 0.0) ? nca_step_scale : 1.0, 0.4, 1.8);
-    float perturbAmount = clamp(nca_perturb, 0.0, 1.5);
-    uint seedInt = uint(nca_seed * 65536.0);
 
     for (uint c = 0u; c < N; c++) {
-        float val = float(B[c]);
-
-        if (perturbAmount > 0.0001) {
-            // Scale perturbation relative to trained weight magnitude to preserve matrix eigenspectrum and signs
-            // perturbAmount in [0, 1] gives gentle 0% to 10% relative weight variation
-            float relScale = perturbAmount * 0.10;
-            float absScale = perturbAmount * 2.5;
-
-            for (uint i = 0u; i < 48u; i++) {
-                // Anti-symmetric zero-mean noise pair strictly avoids DC drift across the 48 inputs
-                uint h = (i * 73856093u ^ c * 19349663u ^ seedInt);
-                h = (h ^ (h >> 13u)) * 1274126177u;
-                float rawNoise = float(int(h & 0xFFFFu) - 32768) / 32768.0; // [-1.0, 1.0]
-                
-                // Anti-symmetric alternating sign guarantees sum of noise across 48 inputs is zero-mean
-                float noise = (i % 2u == 0u) ? rawNoise : -rawNoise;
-                
-                float origW = float(W[i][c]);
-                float w = origW * (1.0 + noise * relScale) + noise * absScale;
-                val += hs[i] * w;
-            }
-        } else {
-            for (uint i = 0u; i < 48u; i++) {
-                val += hs[i] * float(W[i][c]);
-            }
+        float val = B_biases[c];
+        for (uint i = 0u; i < 48u; i++) {
+            val += hs[i] * W_weights[i * 12u + c];
         }
         
         y[c] = xs[c] + (val / S) * effectiveStepScale;
@@ -514,92 +405,8 @@ void main() {
     float intensity = angleDiff < 0.012 ? 1.0 : 0.0;
     vec3 spectrum = color * intensity * 2.;
 
-    // --- Center-Originating Tree Branch & Hypergraph Edge Waveform ---
-    vec3 waveformColor = vec3(0.0);
-    float wfMix = clamp(waveform_mix, 0.0, 1.0);
-    if (wfMix > 0.0001) {
-        // Point p is centered at (0, 0) in the middle of the circular spectrogram
-        // Fixed orientation: does NOT rotate!
-        vec2 p = centered;
-        float rDist = length(p);
-
-        // Render branching tree edges and hypergraph chords (28 edges: 23 tree branches + 5 hypergraph cross-chords)
-        for (int i = 0; i < 28; i++) {
-            vec2 a = TREE_NODES[TREE_EDGES[i].x];
-            vec2 b = TREE_NODES[TREE_EDGES[i].y];
-            vec2 ab = b - a;
-            float lenSq = dot(ab, ab);
-            float t = clamp(dot(p - a, ab) / max(lenSq, 0.0001), 0.0, 1.0);
-            vec2 c = a + t * ab;
-
-            float r = length(c);
-            float rNorm = clamp(r / 0.82, 0.0, 1.0);
-
-            // Fetch audio waveform sample along this radial distance
-            int waveIdx = int(rNorm * (MUSICAL_BINS - 1.0));
-            float waveVal = imageLoad(audioTexture, ivec2(waveIdx, 1)).r;
-            float waveAmp = clamp(waveVal * 2.8, -1.0, 1.0);
-
-            // Audio waveform acoustic vibration: bends and vibrates edges with sound frequencies
-            vec2 n = normalize(vec2(-ab.y, ab.x));
-            float tether = sin(t * 3.14159265); // Anchored at nodes t=0 and t=1
-            float edgeVib = tether * (waveAmp * 0.025 + 0.006 * sin(t * 14.0 + time * 8.0 + r * 16.0));
-            vec2 cVib = c + n * edgeVib;
-
-            float d = length(p - cVib);
-
-            bool isChord = (i >= 23);
-            float baseThick = isChord ? 0.0016 : mix(0.0055, 0.0016, rNorm);
-
-            // Crisp antialiased core filament
-            float core = smoothstep(baseThick, baseThick * 0.25, d);
-
-            // Bounded soft aura glow (falls cleanly to 0 outside radius)
-            float aura = smoothstep(baseThick * 3.6, 0.0, d) * 0.45;
-
-            // Bioluminescent energy pulse propagating outward from center root along the branch
-            float pulse = sin(r * 24.0 - time * 8.0 - waveAmp * 3.0);
-            pulse = pow(clamp(pulse, 0.0, 1.0), 5.0) * (0.3 + 0.7 * abs(waveAmp));
-
-            float edgeLuma = core * 1.8 + aura + pulse * 1.6 * core;
-
-            // Palette: organic emerald-cyan at root -> electric azure-cyan at canopy tips
-            vec3 edgeCol = mix(vec3(0.08, 0.95, 0.65), vec3(0.18, 0.85, 1.0), rNorm);
-            if (isChord) {
-                edgeCol = mix(edgeCol, vec3(0.85, 0.38, 1.0), 0.65); // Hypergraph chords: luminous violet-magenta
-            }
-            edgeCol += vec3(0.85, 0.98, 1.0) * pulse * 0.8; // Bright pulse spark
-
-            waveformColor += edgeCol * edgeLuma;
-        }
-
-        // Render Hypergraph Vertices / Junction Nodes (24 nodes)
-        for (int k = 0; k < 24; k++) {
-            vec2 vk = TREE_NODES[k];
-            float rk = length(vk);
-            int wIdx = int(clamp(rk / 0.82, 0.0, 1.0) * (MUSICAL_BINS - 1.0));
-            float wVal = imageLoad(audioTexture, ivec2(wIdx, 1)).r;
-
-            float dNode = length(p - vk);
-            float nRadius = (k == 0) ? 0.020 : (k <= 3 ? 0.010 : 0.0065);
-            float nCore = smoothstep(nRadius, 0.0, dNode);
-            float nGlow = smoothstep(nRadius * 2.8, 0.0, dNode) * 0.55;
-
-            float nodePulse = 1.0 + 2.5 * abs(wVal);
-            vec3 nCol = (k == 0) ? vec3(0.3, 1.0, 0.7) : ((k >= 19) ? vec3(0.2, 0.85, 0.6) : vec3(0.55, 0.92, 1.0));
-            waveformColor += nCol * (nCore * 2.2 + nGlow) * nodePulse;
-        }
-
-        // Central Root Origin Hub (radiant anchor at 0, 0)
-        float rootGlow = smoothstep(0.08, 0.0, rDist) * (1.2 + 2.0 * abs(imageLoad(audioTexture, ivec2(0, 1)).r));
-        waveformColor += vec3(0.12, 0.92, 0.68) * rootGlow;
-
-        // Mask to circular spectrogram display bounds
-        waveformColor *= smoothstep(0.88, 0.82, rDist);
-    }
-
-    // Blend between circular frequency spectrogram and center-originating waveform
-    vec3 activeAudioSignal = mix(spectrum, waveformColor, wfMix);
+    // Active audio signal is the circular radar spectrogram
+    vec3 activeAudioSignal = spectrum;
     vec3 finalColor;
     
     vec4 back = imageLoad(backbuffer, texelCoord); 
@@ -613,8 +420,6 @@ void main() {
     imageStore(backbuffer, texelCoord, back);
 
     finalColor += back.rgb;
-    // Add direct waveform highlight for crisp, immediate center-originating luminescence
-    finalColor += waveformColor * wfMix * 0.75;
     
     vec4 value = vec4(finalColor, 1.0);
     value *= 1. - radius;
@@ -727,8 +532,8 @@ void main() {
     imageStore(outputTexture, fragCoord, xrgb);
     // interpolation
     vec4 interpolated = interp(fragCoord, int(FACTOR-1));
-    // Overlay direct luminous radar sweep / tree waveform on top of NCA substrate
-    interpolated.rgb += activeAudioSignal * 0.85 + back.rgb * 0.15;
+    // Overlay direct luminous radar sweep and glowing backbuffer structures (imprinted messages)
+    interpolated.rgb += activeAudioSignal * 0.85 + back.rgb * 0.35;
     imageStore(outputTexture, fragCoord, interpolated);
 }
  

@@ -15,9 +15,11 @@
 #include <opencv2/opencv.hpp>
 #include <sys/stat.h>
 
+#include <random>
 #include "shader_c.h"
 #include "shader_m.h"
 #include "web_server.h"
+#include "font8x8.h"
 
 // Global radar configuration and web server
 RadarConfig g_radarConfig;
@@ -28,8 +30,274 @@ bool ENABLE_WEB = true;
 // Global texture and buffer handles for recreation
 unsigned int outputTexture, audioTexture, cameraTexture, backbufferTexture;
 unsigned int stateBuffer, positionBuffer, velocityBuffer, trailGridBuffer, agentGridBuffer, angleBuffer;
-unsigned int uniformBuffer;
+unsigned int uniformBuffer, ncaWeightBuffer;
+unsigned int SCR_WIDTH = 800, SCR_HEIGHT = 600;
+unsigned int TEXTURE_WIDTH = 800, TEXTURE_HEIGHT = 600;
 bool texturesInitialized = false;
+
+// Original trained NCA weights baseline
+const float ORIGINAL_NCA_B[12] = {
+    -332.0f, -212.0f, -353.0f, 566.0f, -86.0f, 837.0f, 510.0f, -339.0f, 373.0f, 414.0f, -787.0f, -712.0f
+};
+
+const float ORIGINAL_NCA_W[48][12] = {
+    { -816, 142, -40, 142, -119, 0, 758, 70, 99, -149, -165, -141 },
+    { -24, -1182, -67, 438, 267, 190, 358, 113, 191, -64, -196, -263 },
+    { 10, 170, -785, -49, 98, -39, 733, -75, 210, -161, -112, -107 },
+    { 60, -183, 158, -966, 352, -336, 588, -356, 123, -531, -364, -201 },
+    { -11, -89, -77, -259, -2788, 276, 46, 56, 72, -28, -179, 66 },
+    { 24, -43, -1, 463, -452, -2262, 95, 59, -51, 3, -222, -216 },
+    { -162, 158, -113, 19, -26, -66, -1856, 49, -27, -302, -99, -366 },
+    { 58, 9, 203, -20, -200, -76, -28, -2600, -206, 29, 127, 358 },
+    { -68, -222, -143, -254, -287, 157, 255, 400, -3107, -87, 373, -420 },
+    { -59, -75, 1, -464, 19, 82, -26, 181, -187, -1802, 124, -557 },
+    { 191, 166, 218, -398, 22, 131, 136, 552, 301, -273, -1490, -123 },
+    { 188, 142, 283, -677, 143, 84, -154, -80, 212, -34, -69, -1619 },
+    { 257, -95, -4, 62, -3, 36, 29, -17, 16, 12, 34, 6 },
+    { -79, 218, -137, -68, -23, -3, 63, -20, -12, -14, -1, 16 },
+    { -97, -42, 211, 91, -3, 26, 42, 12, -13, -40, -5, 37 },
+    { -106, -5, -160, 673, -500, 177, 219, 41, -167, -479, -273, -478 },
+    { -137, -144, -138, -30, 402, -100, 20, 59, -57, -11, -16, 93 },
+    { 144, 174, 145, 84, 14, 128, -180, -234, -127, -221, 59, 192 },
+    { 8, 4, 6, 76, -92, -343, 1, -6, 97, -20, -50, -41 },
+    { -38, -38, -24, 42, 158, -184, -28, -130, 70, -48, 28, -43 },
+    { -178, -190, -164, -131, 116, -15, -154, -93, 229, 57, 33, 193 },
+    { -52, -84, -60, -126, 86, -50, 32, 210, -71, 268, 123, -203 },
+    { 213, 184, 191, -65, 162, -25, 128, 445, 80, 69, 432, -191 },
+    { -124, -117, -125, -59, -130, -84, -42, 173, 261, 14, 5, -278 },
+    { 51, -269, -169, -412, 300, -62, 148, -72, 219, -66, 335, 492 },
+    { -157, 83, -128, -397, 144, -98, 369, 17, 183, -123, 392, 490 },
+    { -193, -370, 35, -306, 228, -5, 155, 49, 169, -15, 384, 480 },
+    { 198, 172, 203, -172, 179, 92, 127, 183, 450, -2, -66, 222 },
+    { 48, 39, 62, 169, 1160, -98, 174, 32, -15, 100, 117, 65 },
+    { -36, -63, -54, 279, -132, -1232, -7, 130, 90, 37, -20, -38 },
+    { 14, 54, 46, -129, 34, 85, -480, 100, -83, -325, -78, 107 },
+    { -228, -276, -217, -255, -117, -148, 0, 1, -156, 257, 164, -8 },
+    { -27, -95, -41, -34, -35, 33, 150, 269, -1215, -116, 299, -217 },
+    { -294, -409, -300, -267, 104, -40, 203, 101, 133, -150, 368, 8 },
+    { 139, 154, 113, 27, 19, 274, 103, 150, 217, 174, -293, 300 },
+    { 82, 39, 56, -211, -121, -44, -61, 557, -982, -167, 358, -339 },
+    { -32, 29, 20, -6, -28, -19, 21, 1, 0, 21, -23, -2 },
+    { 13, -12, 38, 28, -47, 32, -42, 38, -37, -14, -27, -65 },
+    { 43, 5, -36, -21, 10, -21, 9, 15, -34, -19, -16, -30 },
+    { 528, 533, 528, -52, -199, -120, -6, 140, 211, -186, 88, 29 },
+    { 25, 9, 27, -71, 30, -8, -6, 73, 31, 44, 213, -1 },
+    { 227, 224, 226, 70, 71, -43, 101, 100, 168, -405, 69, -83 },
+    { -142, -184, -148, -169, -115, 119, 25, 26, 266, 296, 296, 218 },
+    { 118, 164, 96, 279, -120, 98, 41, 30, 233, -190, -124, 204 },
+    { -73, -95, -63, -89, 65, -13, -5, -50, 77, -51, 38, 87 },
+    { -55, -71, -42, -44, 29, 6, 38, -174, 77, 5, -45, 112 },
+    { 148, 73, 136, -81, -113, 12, 226, 133, -417, -305, 226, -81 },
+    { 100, 152, 115, 28, -229, 26, -272, -200, 528, -81, -102, 235 }
+};
+
+struct NcaGpuGenome {
+    float W[576]; // 48 x 12
+    float B[12];  // 12
+};
+
+class NcaGeneticEngine {
+public:
+    NcaGpuGenome baseline;
+    NcaGpuGenome candidate;
+    std::vector<NcaGpuGenome> history;
+    int generation = 0;
+    bool hasCandidate = false;
+    int mutatedCount = 0;
+    bool dirty = false;
+    std::mt19937 rng;
+
+    NcaGeneticEngine() : rng(1337) {
+        resetToOriginal();
+    }
+
+    void resetToOriginal() {
+        for (int i = 0; i < 48; i++) {
+            for (int c = 0; c < 12; c++) {
+                baseline.W[i * 12 + c] = ORIGINAL_NCA_W[i][c];
+            }
+        }
+        for (int c = 0; c < 12; c++) {
+            baseline.B[c] = ORIGINAL_NCA_B[c];
+        }
+        candidate = baseline;
+        history.clear();
+        generation = 0;
+        hasCandidate = false;
+        mutatedCount = 0;
+        dirty = true;
+    }
+
+    int mutate(const std::string& target, float scale, float rate) {
+        candidate = baseline;
+        std::uniform_real_distribution<float> probDist(0.0f, 1.0f);
+        std::normal_distribution<float> normDist(0.0f, 1.0f);
+
+        int count = 0;
+        float effScale = std::max(0.01f, std::min(1.0f, scale));
+        float effRate = std::max(0.01f, std::min(1.0f, rate));
+
+        // Rows in W:
+        // 0..11: xs (state recurrence)
+        // 12..23: ps (spatial perception: Sobel / Lap)
+        // 24..35: abs(xs) (nonlinear state)
+        // 36..47: abs(ps) (nonlinear perception)
+
+        for (int row = 0; row < 48; row++) {
+            bool targetRow = false;
+            if (target == "all") {
+                targetRow = true;
+            } else if (target == "perception") {
+                targetRow = (row >= 12 && row < 24) || (row >= 36 && row < 48);
+            } else if (target == "state") {
+                targetRow = (row < 12) || (row >= 24 && row < 36);
+            } else if (target == "nonlinear") {
+                targetRow = (row >= 24 && row < 48);
+            }
+
+            if (!targetRow) continue;
+
+            for (int col = 0; col < 12; col++) {
+                if (probDist(rng) < effRate) {
+                    int idx = row * 12 + col;
+                    float orig = candidate.W[idx];
+                    float delta = normDist(rng) * (std::abs(orig) * effScale + 40.0f * effScale);
+                    candidate.W[idx] += delta;
+                    count++;
+                }
+            }
+        }
+
+        if (target == "all" || target == "biases" || target == "bias") {
+            for (int c = 0; c < 12; c++) {
+                if (probDist(rng) < effRate) {
+                    float orig = candidate.B[c];
+                    float delta = normDist(rng) * (std::abs(orig) * effScale + 40.0f * effScale);
+                    candidate.B[c] += delta;
+                    count++;
+                }
+            }
+        }
+
+        mutatedCount = count;
+        hasCandidate = true;
+        dirty = true;
+        return count;
+    }
+
+    void cancel() {
+        if (hasCandidate) {
+            candidate = baseline;
+            hasCandidate = false;
+            mutatedCount = 0;
+            dirty = true;
+        }
+    }
+
+    void reinforce() {
+        if (hasCandidate) {
+            history.push_back(baseline);
+            if (history.size() > 25) {
+                history.erase(history.begin());
+            }
+            baseline = candidate;
+            generation++;
+            hasCandidate = false;
+            mutatedCount = 0;
+            dirty = true;
+        }
+    }
+
+    bool rollback() {
+        if (!history.empty()) {
+            baseline = history.back();
+            history.pop_back();
+            candidate = baseline;
+            if (generation > 0) generation--;
+            hasCandidate = false;
+            mutatedCount = 0;
+            dirty = true;
+            return true;
+        }
+        return false;
+    }
+
+    const NcaGpuGenome& getActiveGenome() const {
+        return hasCandidate ? candidate : baseline;
+    }
+};
+
+NcaGeneticEngine g_geneticEngine;
+
+void imprintTextMessage(const std::string& msg) {
+    if (msg.empty() || TEXTURE_WIDTH == 0 || TEXTURE_HEIGHT == 0) return;
+
+    std::string cleanMsg;
+    for (char ch : msg) {
+        if (ch >= 32 && ch <= 126) {
+            cleanMsg += ch;
+        } else if (ch == '\n' || ch == '\t') {
+            cleanMsg += ' ';
+        }
+    }
+    if (cleanMsg.empty()) cleanMsg = "BYOB";
+    if (cleanMsg.length() > 32) cleanMsg = cleanMsg.substr(0, 32);
+
+    int charScale = std::max(2, std::min(8, (int)(TEXTURE_WIDTH / ((int)cleanMsg.length() * 10 + 20))));
+    int charWidth = 8 * charScale;
+    int charHeight = 8 * charScale;
+    int spacing = 2 * charScale;
+    int totalWidth = (int)cleanMsg.length() * charWidth + (int)(cleanMsg.length() - 1) * spacing;
+    int totalHeight = charHeight;
+
+    int startX = (TEXTURE_WIDTH - totalWidth) / 2;
+    int startY = (TEXTURE_HEIGHT - totalHeight) / 2;
+
+    if (startX < 0) startX = 0;
+    if (startY < 0) startY = 0;
+    if (startX + totalWidth > (int)TEXTURE_WIDTH) totalWidth = TEXTURE_WIDTH - startX;
+    if (startY + totalHeight > (int)TEXTURE_HEIGHT) totalHeight = TEXTURE_HEIGHT - startY;
+
+    std::vector<float> patch(totalWidth * totalHeight * 4, 0.0f);
+
+    for (size_t ci = 0; ci < cleanMsg.length(); ci++) {
+        uint8_t ascii = (uint8_t)cleanMsg[ci];
+        int glyphIdx = ascii - 32;
+        int glyphStartX = (int)ci * (charWidth + spacing);
+
+        for (int r = 0; r < 8; r++) {
+            uint8_t rowBits = FONT8X8[glyphIdx][r];
+            int flippedR = 7 - r;
+
+            for (int c = 0; c < 8; c++) {
+                if ((rowBits >> (7 - c)) & 1) {
+                    for (int dy = 0; dy < charScale; dy++) {
+                        int py = flippedR * charScale + dy;
+                        if (py >= totalHeight) continue;
+
+                        for (int dx = 0; dx < charScale; dx++) {
+                            int px = glyphStartX + c * charScale + dx;
+                            if (px >= totalWidth) continue;
+
+                            int pixelIdx = (py * totalWidth + px) * 4;
+                            patch[pixelIdx + 0] = 1.6f;
+                            patch[pixelIdx + 1] = 0.5f;
+                            patch[pixelIdx + 2] = 2.4f;
+                            patch[pixelIdx + 3] = 1.0f;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, backbufferTexture);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, startX, startY, totalWidth, totalHeight, GL_RGBA, GL_FLOAT, patch.data());
+
+    std::cout << "[Easter Egg] Imprinted message: \"" << cleanMsg << "\" into backbuffer (" 
+              << totalWidth << "x" << totalHeight << " at " << startX << "," << startY << ")" << std::endl;
+}
 
 unsigned int frameCounter;
 float currentFrame;
@@ -106,11 +374,6 @@ void recreateTextures(int width, int height) {
 }
 
 void renderQuad();
-
-// Screen resolution will be set dynamically
-unsigned int SCR_WIDTH;
-unsigned int SCR_HEIGHT;
-unsigned int TEXTURE_WIDTH, TEXTURE_HEIGHT;
 
 int CAMERA_DEV = -1;
 
@@ -712,6 +975,12 @@ int main(int argc, char* argv[]) {
     glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * sizeof(float), NULL, GL_DYNAMIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, angleBuffer);
 
+    // Dynamic NCA genome weights buffer (binding 11) for Human-Assisted Genetic Algorithm
+    glGenBuffers(1, &ncaWeightBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ncaWeightBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(NcaGpuGenome), &g_geneticEngine.getActiveGenome(), GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, ncaWeightBuffer);
+
     // Create uniform buffer for frame counter and other uniforms
     struct UniformData {
         float kernel[9]; // mat3 = 9 floats
@@ -833,6 +1102,37 @@ int main(int argc, char* argv[]) {
             float blendStep = std::min(1.0f, 6.0f * deltaTime);
             currentWaveformMix += (targetMix - currentWaveformMix) * blendStep;
 
+            // Handle pending Easter egg message imprints
+            std::string pendingMsg;
+            if (g_radarConfig.popPendingImprint(pendingMsg)) {
+                imprintTextMessage(pendingMsg);
+            }
+
+            // Handle pending genetic algorithm actions
+            RadarConfig::GeneticRequest genReq;
+            if (g_radarConfig.popPendingGenetic(genReq)) {
+                if (genReq.action == "mutate") {
+                    g_geneticEngine.mutate(genReq.target, genReq.scale, genReq.rate);
+                } else if (genReq.action == "cancel" || genReq.action == "revert") {
+                    g_geneticEngine.cancel();
+                } else if (genReq.action == "reinforce" || genReq.action == "commit" || genReq.action == "keep") {
+                    g_geneticEngine.reinforce();
+                } else if (genReq.action == "rollback") {
+                    g_geneticEngine.rollback();
+                } else if (genReq.action == "reset") {
+                    g_geneticEngine.resetToOriginal();
+                }
+            }
+            g_radarConfig.ncaGeneration.store(g_geneticEngine.generation);
+            g_radarConfig.ncaHasCandidate.store(g_geneticEngine.hasCandidate);
+            g_radarConfig.ncaMutatedCount.store(g_geneticEngine.mutatedCount);
+
+            if (g_geneticEngine.dirty) {
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, ncaWeightBuffer);
+                glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(NcaGpuGenome), &g_geneticEngine.getActiveGenome());
+                g_geneticEngine.dirty = false;
+            }
+
             // Set radar shader controls from web interface
             currentComputeShader->setFloat("scan_phase", radarPhase);
             currentComputeShader->setFloat("scan_speed", curSpeed);
@@ -844,6 +1144,7 @@ int main(int argc, char* argv[]) {
             currentComputeShader->setFloat("nca_perturb", g_radarConfig.ncaPerturb.load());
             currentComputeShader->setFloat("nca_seed", g_radarConfig.ncaSeed.load());
             currentComputeShader->setFloat("nca_step_scale", g_radarConfig.ncaStepScale.load());
+            currentComputeShader->setFloat("nca_topology", g_radarConfig.ncaTopology.load());
             currentComputeShader->setFloat("waveform_mix", currentWaveformMix);
             
             // Update uniform buffer with frame counter and time

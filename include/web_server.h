@@ -56,6 +56,72 @@ struct RadarConfig {
     std::atomic<float> ncaSeed{0.0f};         // Mutation seed
     std::atomic<float> ncaStepScale{1.0f};    // NCA reaction step scale (default 1.0)
 
+    // Topology control: 0.0 = Cartesian, 1.0 = Polar (pole in center)
+    std::atomic<float> ncaTopology{0.0f};
+
+    // Human-Assisted Genetic Algorithm state
+    std::atomic<int> ncaGeneration{0};
+    std::atomic<bool> ncaHasCandidate{false};
+    std::atomic<int> ncaMutatedCount{0};
+    std::atomic<float> ncaMutationScale{0.15f};
+    std::atomic<float> ncaMutationRate{0.25f};
+
+    // Action triggers for Genetic Algorithm
+    std::atomic<bool> geneticActionPending{false};
+    std::mutex geneticMutex;
+    std::string pendingGeneticAction;
+    std::string pendingGeneticTarget{"all"};
+    float pendingGeneticScale{0.15f};
+    float pendingGeneticRate{0.25f};
+
+    // Action triggers for Structure Imprint Easter Egg
+    std::atomic<bool> hasPendingImprint{false};
+    std::mutex imprintMutex;
+    std::string pendingImprintMessage;
+
+    void requestImprint(const std::string& msg) {
+        std::lock_guard<std::mutex> lock(imprintMutex);
+        pendingImprintMessage = msg;
+        hasPendingImprint.store(true);
+    }
+
+    void requestGenetic(const std::string& action, const std::string& target, float scale, float rate) {
+        std::lock_guard<std::mutex> lock(geneticMutex);
+        pendingGeneticAction = action;
+        pendingGeneticTarget = target;
+        pendingGeneticScale = scale;
+        pendingGeneticRate = rate;
+        geneticActionPending.store(true);
+    }
+
+    struct GeneticRequest {
+        std::string action;
+        std::string target{"all"};
+        float scale{0.15f};
+        float rate{0.25f};
+    };
+
+    bool popPendingImprint(std::string& outMsg) {
+        if (!hasPendingImprint.load()) return false;
+        std::lock_guard<std::mutex> lock(imprintMutex);
+        if (!hasPendingImprint.load()) return false;
+        outMsg = pendingImprintMessage;
+        hasPendingImprint.store(false);
+        return true;
+    }
+
+    bool popPendingGenetic(GeneticRequest& req) {
+        if (!geneticActionPending.load()) return false;
+        std::lock_guard<std::mutex> lock(geneticMutex);
+        if (!geneticActionPending.load()) return false;
+        req.action = pendingGeneticAction;
+        req.target = pendingGeneticTarget;
+        req.scale = pendingGeneticScale;
+        req.rate = pendingGeneticRate;
+        geneticActionPending.store(false);
+        return true;
+    }
+
     std::string scaleName() const {
         int s = scaleType.load();
         if (s == 1) return "mel";
@@ -103,6 +169,13 @@ struct RadarConfig {
         ss << "  \"nca_perturb\": " << ncaPerturb.load() << ",\n";
         ss << "  \"nca_seed\": " << ncaSeed.load() << ",\n";
         ss << "  \"nca_step_scale\": " << ncaStepScale.load() << ",\n";
+        ss << "  \"nca_topology\": " << ncaTopology.load() << ",\n";
+        ss << "  \"topology\": \"" << (ncaTopology.load() > 0.5f ? "polar" : "cartesian") << "\",\n";
+        ss << "  \"genetic_generation\": " << ncaGeneration.load() << ",\n";
+        ss << "  \"genetic_has_candidate\": " << (ncaHasCandidate.load() ? "true" : "false") << ",\n";
+        ss << "  \"genetic_mutated_count\": " << ncaMutatedCount.load() << ",\n";
+        ss << "  \"genetic_mutation_scale\": " << ncaMutationScale.load() << ",\n";
+        ss << "  \"genetic_mutation_rate\": " << ncaMutationRate.load() << ",\n";
         ss << "  \"fps\": " << currentFps.load() << ",\n";
         ss << "  \"frame\": " << frameCount.load() << "\n";
         ss << "}";
@@ -359,6 +432,85 @@ private:
             return;
         }
 
+        // Easter Egg Structure Imprint endpoint
+        if (method == "POST" && cleanPath == "/api/imprint") {
+            size_t bodyPos = request.find("\r\n\r\n");
+            std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
+            std::string msg = "BYOB";
+            extractJsonString(body, "message", msg);
+            m_config.requestImprint(msg);
+
+            std::string resBody = "{\"status\":\"imprinted\",\"message\":\"" + msg + "\"}";
+            std::ostringstream response;
+            response << "HTTP/1.1 200 OK\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << resBody.length() << "\r\n"
+                     << cors
+                     << "Connection: close\r\n\r\n"
+                     << resBody;
+            std::string resStr = response.str();
+            send(clientFd, resStr.c_str(), resStr.length(), 0);
+            return;
+        }
+
+        // Human-Assisted Genetic Algorithm endpoint
+        if (cleanPath == "/api/genetic") {
+            if (method == "POST") {
+                size_t bodyPos = request.find("\r\n\r\n");
+                std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
+                std::string action = "mutate";
+                std::string target = "all";
+                float scale = 0.15f;
+                float rate = 0.25f;
+                extractJsonString(body, "action", action);
+                extractJsonString(body, "target", target);
+                extractJsonFloat(body, "scale", scale);
+                extractJsonFloat(body, "rate", rate);
+
+                m_config.requestGenetic(action, target, scale, rate);
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            }
+            std::string resBody = m_config.toJson();
+            std::ostringstream response;
+            response << "HTTP/1.1 200 OK\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << resBody.length() << "\r\n"
+                     << cors
+                     << "Connection: close\r\n\r\n"
+                     << resBody;
+            std::string resStr = response.str();
+            send(clientFd, resStr.c_str(), resStr.length(), 0);
+            return;
+        }
+
+        // NCA Topology endpoint
+        if (cleanPath == "/api/topology") {
+            if (method == "POST") {
+                size_t bodyPos = request.find("\r\n\r\n");
+                std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
+                float topVal = 0.0f;
+                std::string topStr;
+                if (extractJsonFloat(body, "nca_topology", topVal)) {
+                    m_config.ncaTopology.store(std::max(0.0f, std::min(1.0f, topVal)));
+                } else if (extractJsonString(body, "topology", topStr) || extractJsonString(body, "mode", topStr)) {
+                    if (topStr == "polar") m_config.ncaTopology.store(1.0f);
+                    else if (topStr == "cartesian") m_config.ncaTopology.store(0.0f);
+                    else if (topStr == "spiral" || topStr == "vortex") m_config.ncaTopology.store(0.5f);
+                }
+            }
+            std::string resBody = m_config.toJson();
+            std::ostringstream response;
+            response << "HTTP/1.1 200 OK\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << resBody.length() << "\r\n"
+                     << cors
+                     << "Connection: close\r\n\r\n"
+                     << resBody;
+            std::string resStr = response.str();
+            send(clientFd, resStr.c_str(), resStr.length(), 0);
+            return;
+        }
+
         if (method == "POST" && cleanPath == "/api/controls") {
             size_t bodyPos = request.find("\r\n\r\n");
             std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
@@ -462,6 +614,26 @@ private:
                     m_config.ncaStepScale.store(val);
                 }
             }
+            if (extractJsonFloat(body, "nca_topology", val)) {
+                m_config.ncaTopology.store(std::max(0.0f, std::min(1.0f, val)));
+            } else if (extractJsonString(body, "topology", strVal)) {
+                if (strVal == "polar") m_config.ncaTopology.store(1.0f);
+                else if (strVal == "cartesian") m_config.ncaTopology.store(0.0f);
+                else if (strVal == "spiral" || strVal == "vortex") m_config.ncaTopology.store(0.5f);
+            }
+            if (extractJsonString(body, "genetic_action", strVal)) {
+                std::string target = "all";
+                float scale = 0.15f;
+                float rate = 0.25f;
+                extractJsonString(body, "genetic_target", target);
+                extractJsonFloat(body, "genetic_scale", scale);
+                extractJsonFloat(body, "genetic_rate", rate);
+                m_config.requestGenetic(strVal, target, scale, rate);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            if (extractJsonString(body, "imprint_message", strVal)) {
+                m_config.requestImprint(strVal);
+            }
 
             std::string resBody = m_config.toJson();
             std::ostringstream response;
@@ -497,6 +669,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       --accent: #00ff88;
       --accent-rgb: 0, 255, 136;
       --accent-cyan: #00e5ff;
+      --accent-warn: #ffbb00;
       --text: #e2edf2;
       --text-muted: #6f8898;
       --track: #172028;
@@ -588,6 +761,20 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       cursor: pointer;
       box-shadow: 0 0 6px var(--accent);
     }
+    input[type=text] {
+      background: var(--track);
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      padding: 7px 10px;
+      border-radius: 5px;
+      font-family: monospace;
+      font-size: 0.85rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input[type=text]:focus {
+      border-color: var(--accent);
+    }
     .btn-row {
       display: flex;
       gap: 6px;
@@ -630,6 +817,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       gap: 6px;
       transition: all 0.2s;
     }
+    button.toggle-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
     button.toggle-btn.active {
       background: rgba(var(--accent-rgb), 0.15);
       border-color: var(--accent);
@@ -643,6 +834,25 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       color: var(--text-muted);
       font-family: monospace;
       margin-top: -2px;
+    }
+    .badge {
+      font-size: 0.70rem;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge-stable {
+      background: #15222d;
+      color: var(--text-muted);
+      border: 1px solid var(--card-border);
+    }
+    .badge-candidate {
+      background: rgba(255, 187, 0, 0.15);
+      color: var(--accent-warn);
+      border: 1px solid var(--accent-warn);
+      box-shadow: 0 0 8px rgba(255, 187, 0, 0.3);
     }
   </style>
 </head>
@@ -687,20 +897,21 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       </div>
     </div>
 
-    <!-- Display & Waveform Mode -->
+    <!-- NCA Topology: Cartesian vs Polar (Rotated Sobel Filters) -->
     <div class="section">
       <div class="section-head">
-        <span class="section-title">Display & Waveform Mode</span>
-        <span id="wfStatusLabel" class="val" style="color:var(--accent-cyan);">Waveform (Unsynced)</span>
+        <span class="section-title">NCA Topology</span>
+        <span id="topologyLabel" class="val">Cartesian (0.0)</span>
       </div>
       <div class="btn-row">
-        <button class="btn active" id="wfBtnAuto" onclick="setWaveformMode('auto')" title="Switch to center-originating waveform when rhythm is not established">Auto (Fallback)</button>
-        <button class="btn" id="wfBtnAlways" onclick="setWaveformMode('always')" title="Always show center-originating waveform">Always Waveform</button>
-        <button class="btn" id="wfBtnOff" onclick="setWaveformMode('off')" title="Always show circular spectrogram">Spectrogram Only</button>
+        <button class="btn active" id="topoBtnCart" onclick="setTopology(0.0)">Cartesian</button>
+        <button class="btn" id="topoBtnSpiral" onclick="setTopology(0.5)">Spiral / Vortex</button>
+        <button class="btn" id="topoBtnPolar" onclick="setTopology(1.0)">Polar (Pole Center)</button>
       </div>
-      <div class="meta-row" style="margin-top:2px;">
-        <span id="rhythmStatusLabel">Rhythm: Unestablished</span>
-        <span id="activeDisplayLabel">Active: Waveform (Center)</span>
+      <input type="range" id="topologySlider" min="0.0" max="1.0" step="0.02" value="0.0">
+      <div class="meta-row">
+        <span>Sobel Filter Field:</span>
+        <span id="topologyDesc">Cartesian ∇x, ∇y</span>
       </div>
     </div>
 
@@ -757,35 +968,77 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       </div>
     </div>
 
-    <!-- NCA Weights Perturbation -->
+    <!-- Human-Assisted Genetic Evolution -->
     <div class="section">
       <div class="section-head">
-        <span class="section-title">NCA Weights Perturbation</span>
-        <span id="ncaVal" class="val">0.00</span>
+        <span class="section-title">Genetic Algorithm</span>
+        <span id="geneticGenLabel" class="val">Gen: 0</span>
       </div>
 
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span id="candidateBadge" class="badge badge-stable">Baseline Stable</span>
+        <span id="mutatedCountLabel" class="meta-row" style="margin:0;">Mutated: 0 weights</span>
+      </div>
+
+      <!-- Target subsystem selector -->
       <div style="display:flex; flex-direction:column; gap:3px;">
-        <div class="meta-row"><span>Perturbation Amount</span><span id="ncaAmtVal">0.00</span></div>
-        <input type="range" id="ncaSlider" min="0.0" max="1.0" step="0.01" value="0.0">
+        <div class="meta-row"><span>Target Subsystem</span><span id="targetNameLabel">All (588)</span></div>
+        <div class="btn-row">
+          <button class="btn active" id="targetBtnAll" onclick="setGeneticTarget('all')">All</button>
+          <button class="btn" id="targetBtnPercep" onclick="setGeneticTarget('perception')">Perception</button>
+          <button class="btn" id="targetBtnState" onclick="setGeneticTarget('state')">State</button>
+          <button class="btn" id="targetBtnNonlin" onclick="setGeneticTarget('nonlinear')">Nonlinear</button>
+          <button class="btn" id="targetBtnBias" onclick="setGeneticTarget('biases')">Biases</button>
+        </div>
+      </div>
+
+      <!-- Mutation Scale & Rate sliders -->
+      <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
+        <div class="meta-row"><span>Mutation Scale</span><span id="mutScaleVal">0.15</span></div>
+        <input type="range" id="mutScaleSlider" min="0.02" max="0.50" step="0.01" value="0.15">
+      </div>
+      <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
+        <div class="meta-row"><span>Mutation Rate</span><span id="mutRateVal">25%</span></div>
+        <input type="range" id="mutRateSlider" min="0.05" max="0.60" step="0.05" value="0.25">
+      </div>
+
+      <!-- Genetic Actions -->
+      <div class="btn-row" style="margin-top:4px;">
+        <button class="toggle-btn" style="flex:2;" onclick="mutateCandidate()">🎲 Mutate Candidate</button>
+        <button class="btn" id="cancelBtn" style="flex:1; border-color:#ff4466; color:#ff7788;" onclick="cancelCandidate()" title="Cancel candidate and revert to baseline">❌ Cancel</button>
+        <button class="btn" id="reinforceBtn" style="flex:1.2; border-color:var(--accent); color:var(--accent); font-weight:700;" onclick="reinforceCandidate()" title="Lock-in candidate as next generation">✨ Reinforce</button>
       </div>
 
       <div class="btn-row">
-        <button class="btn active" id="ncaBtn0" onclick="setNca(0.0)">Off</button>
-        <button class="btn" id="ncaBtn1" onclick="setNca(0.15)">Subtle</button>
-        <button class="btn" id="ncaBtn2" onclick="setNca(0.45)">Deep</button>
-        <button class="btn" id="ncaBtn3" onclick="setNca(0.85)">Wild</button>
+        <button class="btn" onclick="rollbackGeneration()" title="Rollback to previous generation">⏮ Rollback</button>
+        <button class="btn" onclick="resetToGen0()" title="Reset to original starting NCA weights">↺ Reset Gen 0</button>
       </div>
 
-      <div style="display:flex; gap:6px; margin-top:2px;">
-        <button class="toggle-btn" style="flex:1;" onclick="mutateNcaSeed()">🎲 Mutate Seed</button>
-        <button class="btn" style="flex:1;" onclick="resetNca()">Reset Weights</button>
-      </div>
-
+      <!-- NCA step scale -->
       <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
         <div class="meta-row"><span>NCA Step Scale</span><span id="ncaStepVal">1.0x</span></div>
         <input type="range" id="ncaStepSlider" min="0.2" max="2.0" step="0.05" value="1.0">
       </div>
     </div>
+
+    <!-- Structure Imprint (Easter Egg) -->
+    <div class="section">
+      <div class="section-head">
+        <span class="section-title">Structure Imprint (Easter Egg)</span>
+        <span id="imprintFeedback" class="val" style="color:var(--accent-cyan); font-size:0.75rem;">Ready</span>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <input type="text" id="imprintInput" maxlength="32" placeholder="Arbitrary message..." value="BYOB" style="flex:1;">
+        <button class="toggle-btn active" onclick="triggerImprint()" style="white-space:nowrap;">🌟 Imprint</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" onclick="setImprintText('BYOB')">BYOB</button>
+        <button class="btn" onclick="setImprintText('ANTIGRAVITY')">ANTIGRAVITY</button>
+        <button class="btn" onclick="setImprintText('POLAR LIFE')">POLAR LIFE</button>
+        <button class="btn" onclick="setImprintText('CELLULAR')">CELLULAR</button>
+      </div>
+    </div>
+
   </div>
 
   <script>
@@ -801,22 +1054,32 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       detected_bpm: 120.0,
       auto_freq: false,
       auto_gain: 1.0,
-      waveform_mode: 1,
-      waveform_mode_name: "auto",
-      rhythm_established: false,
-      waveform_active: true,
+      nca_topology: 0.0,
+      topology: "cartesian",
+      nca_step_scale: 1.0,
+      genetic_generation: 0,
+      genetic_has_candidate: false,
+      genetic_mutated_count: 0,
+      genetic_mutation_scale: 0.15,
+      genetic_mutation_rate: 0.25,
+      // Retain for compatibility
       nca_perturb: 0.0,
       nca_seed: 0.0,
-      nca_step_scale: 1.0
+      waveform_mode: 0
     };
+
+    let geneticTarget = "all";
 
     const connDot = document.getElementById('connDot');
     const speedSlider = document.getElementById('speedSlider');
     const decaySlider = document.getElementById('decaySlider');
     const freqMinSlider = document.getElementById('freqMinSlider');
     const freqMaxSlider = document.getElementById('freqMaxSlider');
-    const ncaSlider = document.getElementById('ncaSlider');
+    const topologySlider = document.getElementById('topologySlider');
     const ncaStepSlider = document.getElementById('ncaStepSlider');
+    const mutScaleSlider = document.getElementById('mutScaleSlider');
+    const mutRateSlider = document.getElementById('mutRateSlider');
+    const imprintInput = document.getElementById('imprintInput');
 
     const speedVal = document.getElementById('speedVal');
     const decayVal = document.getElementById('decayVal');
@@ -826,12 +1089,21 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     const scaleLabel = document.getElementById('scaleLabel');
     const bpmLabel = document.getElementById('bpmLabel');
     const gainLabel = document.getElementById('gainLabel');
-    const ncaVal = document.getElementById('ncaVal');
-    const ncaAmtVal = document.getElementById('ncaAmtVal');
+    const topologyLabel = document.getElementById('topologyLabel');
+    const topologyDesc = document.getElementById('topologyDesc');
     const ncaStepVal = document.getElementById('ncaStepVal');
+    const geneticGenLabel = document.getElementById('geneticGenLabel');
+    const candidateBadge = document.getElementById('candidateBadge');
+    const mutatedCountLabel = document.getElementById('mutatedCountLabel');
+    const targetNameLabel = document.getElementById('targetNameLabel');
+    const mutScaleVal = document.getElementById('mutScaleVal');
+    const mutRateVal = document.getElementById('mutRateVal');
+    const imprintFeedback = document.getElementById('imprintFeedback');
 
     const autoSpeedBtn = document.getElementById('autoSpeedBtn');
     const autoFreqBtn = document.getElementById('autoFreqBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
+    const reinforceBtn = document.getElementById('reinforceBtn');
 
     let isSending = false;
     let pendingUpdate = false;
@@ -843,9 +1115,40 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       maxFreqVal.innerText = Math.round(s.freq_max) + ' Hz';
       freqRangeVal.innerText = Math.round(s.freq_min) + ' - ' + Math.round(s.freq_max) + ' Hz';
 
-      ncaVal.innerText = Number(s.nca_perturb || 0).toFixed(2);
-      ncaAmtVal.innerText = Number(s.nca_perturb || 0).toFixed(2);
       ncaStepVal.innerText = Number(s.nca_step_scale || 1.0).toFixed(2) + 'x';
+
+      // Topology
+      const topVal = parseFloat(s.nca_topology || 0.0);
+      topologySlider.value = topVal;
+      if (topVal <= 0.05) {
+        topologyLabel.innerText = 'Cartesian (0.0)';
+        topologyDesc.innerText = 'Cartesian ∇x, ∇y';
+      } else if (topVal >= 0.95) {
+        topologyLabel.innerText = 'Polar (1.0)';
+        topologyDesc.innerText = 'Radial ∇r, Azimuthal ∇θ';
+      } else {
+        topologyLabel.innerText = 'Spiral (' + topVal.toFixed(2) + ')';
+        topologyDesc.innerText = 'Rotated Sobel Field (' + Math.round(topVal * 90) + '°)';
+      }
+      document.getElementById('topoBtnCart').classList.toggle('active', topVal <= 0.1);
+      document.getElementById('topoBtnSpiral').classList.toggle('active', topVal > 0.1 && topVal < 0.9);
+      document.getElementById('topoBtnPolar').classList.toggle('active', topVal >= 0.9);
+
+      // Genetic Algorithm state
+      geneticGenLabel.innerText = 'Gen: ' + (s.genetic_generation !== undefined ? s.genetic_generation : 0);
+      const hasCand = !!s.genetic_has_candidate;
+      if (hasCand) {
+        candidateBadge.className = 'badge badge-candidate';
+        candidateBadge.innerText = 'Candidate Live';
+        cancelBtn.style.opacity = '1.0';
+        reinforceBtn.style.opacity = '1.0';
+      } else {
+        candidateBadge.className = 'badge badge-stable';
+        candidateBadge.innerText = 'Baseline Stable';
+        cancelBtn.style.opacity = '0.4';
+        reinforceBtn.style.opacity = '0.4';
+      }
+      mutatedCountLabel.innerText = 'Mutated: ' + (s.genetic_mutated_count || 0) + ' weights';
 
       if (!autoSpeedBtn.matches(':active') && s.auto_speed !== undefined) {
         autoSpeedBtn.classList.toggle('active', !!s.auto_speed);
@@ -861,45 +1164,6 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         gainLabel.innerText = 'Gain: ' + Number(s.auto_gain).toFixed(1) + 'x';
       }
 
-      // Waveform Mode & Rhythm status UI
-      const wfMode = s.waveform_mode !== undefined ? s.waveform_mode : (s.waveform_mode_name === 'always' ? 2 : s.waveform_mode_name === 'off' ? 0 : 1);
-      const wfBtnAuto = document.getElementById('wfBtnAuto');
-      const wfBtnAlways = document.getElementById('wfBtnAlways');
-      const wfBtnOff = document.getElementById('wfBtnOff');
-      if (wfBtnAuto) wfBtnAuto.classList.toggle('active', wfMode === 1);
-      if (wfBtnAlways) wfBtnAlways.classList.toggle('active', wfMode === 2);
-      if (wfBtnOff) wfBtnOff.classList.toggle('active', wfMode === 0);
-
-      const rhythmEstablished = !!s.rhythm_established;
-      const isWaveActive = !!s.waveform_active;
-
-      const rStatus = document.getElementById('rhythmStatusLabel');
-      if (rStatus) {
-        if (rhythmEstablished) {
-          rStatus.innerText = 'Rhythm: Locked (' + Math.round(s.detected_bpm || 120) + ' BPM)';
-          rStatus.style.color = 'var(--accent)';
-        } else {
-          rStatus.innerText = 'Rhythm: Unestablished';
-          rStatus.style.color = 'var(--text-muted)';
-        }
-      }
-
-      const activeDisp = document.getElementById('activeDisplayLabel');
-      const wfStatus = document.getElementById('wfStatusLabel');
-      if (activeDisp && wfStatus) {
-        if (isWaveActive) {
-          activeDisp.innerText = 'Active: Waveform (Center)';
-          activeDisp.style.color = 'var(--accent-cyan)';
-          wfStatus.innerText = (wfMode === 1) ? 'Waveform (Unsynced)' : 'Waveform (Always)';
-          wfStatus.style.color = 'var(--accent-cyan)';
-        } else {
-          activeDisp.innerText = 'Active: Spectrogram';
-          activeDisp.style.color = 'var(--accent)';
-          wfStatus.innerText = (wfMode === 1) ? 'Spectrogram (Synced)' : 'Spectrogram Only';
-          wfStatus.style.color = 'var(--accent)';
-        }
-      }
-
       const curScale = s.scale || (s.scale_type === 1 ? 'mel' : s.scale_type === 2 ? 'linear' : 'log');
       scaleLabel.innerText = curScale === 'mel' ? 'Mel' : curScale === 'linear' ? 'Linear' : 'Logarithmic';
       document.getElementById('scaleBtnLog').classList.toggle('active', curScale === 'log');
@@ -910,12 +1174,6 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         const btn = document.getElementById('divBtn' + i);
         if (btn) btn.classList.toggle('active', s.rhythm_division === i);
       }
-
-      const np = s.nca_perturb || 0;
-      document.getElementById('ncaBtn0').classList.toggle('active', np < 0.05);
-      document.getElementById('ncaBtn1').classList.toggle('active', np >= 0.05 && np < 0.3);
-      document.getElementById('ncaBtn2').classList.toggle('active', np >= 0.3 && np < 0.65);
-      document.getElementById('ncaBtn3').classList.toggle('active', np >= 0.65);
     }
 
     function syncSliders() {
@@ -923,8 +1181,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       decaySlider.value = state.decay_time;
       freqMinSlider.value = state.freq_min;
       freqMaxSlider.value = state.freq_max;
-      ncaSlider.value = state.nca_perturb;
+      topologySlider.value = state.nca_topology;
       ncaStepSlider.value = state.nca_step_scale;
+      mutScaleSlider.value = state.genetic_mutation_scale;
+      mutRateSlider.value = state.genetic_mutation_rate;
       updateUI(state);
     }
 
@@ -942,13 +1202,13 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           freq_max: parseFloat(state.freq_max),
           scale: state.scale,
           scale_type: parseInt(state.scale_type),
-          waveform_mode: state.waveform_mode_name,
           auto_speed: !!state.auto_speed,
           rhythm_division: parseInt(state.rhythm_division),
           auto_freq: !!state.auto_freq,
-          nca_perturb: parseFloat(state.nca_perturb),
-          nca_seed: parseFloat(state.nca_seed),
-          nca_step_scale: parseFloat(state.nca_step_scale)
+          nca_topology: parseFloat(state.nca_topology),
+          nca_step_scale: parseFloat(state.nca_step_scale),
+          nca_perturb: parseFloat(state.nca_perturb || 0.0),
+          nca_seed: parseFloat(state.nca_seed || 0.0)
         };
         const res = await fetch('/api/controls', {
           method: 'POST',
@@ -958,18 +1218,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         if (res.ok) {
           const data = await res.json();
           connDot.className = 'conn-dot online';
-          if (data.detected_bpm) state.detected_bpm = data.detected_bpm;
-          if (data.auto_gain) state.auto_gain = data.auto_gain;
-          if (data.scanning_speed && state.auto_speed) {
-            state.scanning_speed = data.scanning_speed;
-            speedSlider.value = data.scanning_speed;
-          }
-          if (data.freq_min && state.auto_freq) {
-            state.freq_min = data.freq_min;
-            state.freq_max = data.freq_max;
-            freqMinSlider.value = data.freq_min;
-            freqMaxSlider.value = data.freq_max;
-          }
+          Object.assign(state, data);
           updateUI(state);
         }
       } catch (err) {
@@ -1039,10 +1288,8 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       sendControls();
     });
 
-    ncaSlider.addEventListener('input', () => {
-      state.nca_perturb = parseFloat(ncaSlider.value);
-      updateUI(state);
-      sendControls();
+    topologySlider.addEventListener('input', () => {
+      setTopology(parseFloat(topologySlider.value));
     });
 
     ncaStepSlider.addEventListener('input', () => {
@@ -1050,6 +1297,23 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       updateUI(state);
       sendControls();
     });
+
+    mutScaleSlider.addEventListener('input', () => {
+      state.genetic_mutation_scale = parseFloat(mutScaleSlider.value);
+      mutScaleVal.innerText = state.genetic_mutation_scale.toFixed(2);
+    });
+
+    mutRateSlider.addEventListener('input', () => {
+      state.genetic_mutation_rate = parseFloat(mutRateSlider.value);
+      mutRateVal.innerText = Math.round(state.genetic_mutation_rate * 100) + '%';
+    });
+
+    function setTopology(v) {
+      state.nca_topology = v;
+      topologySlider.value = v;
+      updateUI(state);
+      sendControls();
+    }
 
     function setDecay(v) {
       decaySlider.value = v;
@@ -1061,13 +1325,6 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     function setScale(name) {
       state.scale = name;
       state.scale_type = name === 'mel' ? 1 : name === 'linear' ? 2 : 0;
-      updateUI(state);
-      sendControls();
-    }
-
-    function setWaveformMode(mode) {
-      state.waveform_mode_name = mode;
-      state.waveform_mode = (mode === 'always' ? 2 : mode === 'off' ? 0 : 1);
       updateUI(state);
       sendControls();
     }
@@ -1090,31 +1347,125 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       sendControls();
     }
 
-    function setNca(v) {
-      ncaSlider.value = v;
-      state.nca_perturb = v;
-      updateUI(state);
-      sendControls();
+    // --- Genetic Algorithm Actions ---
+    function setGeneticTarget(tgt) {
+      geneticTarget = tgt;
+      const names = {
+        all: "All (588)",
+        perception: "Perception (Sobel/Lap)",
+        state: "State Recurrence",
+        nonlinear: "Nonlinear (|xs|, |ps|)",
+        biases: "Biases (12)"
+      };
+      targetNameLabel.innerText = names[tgt] || tgt;
+      document.getElementById('targetBtnAll').classList.toggle('active', tgt === 'all');
+      document.getElementById('targetBtnPercep').classList.toggle('active', tgt === 'perception');
+      document.getElementById('targetBtnState').classList.toggle('active', tgt === 'state');
+      document.getElementById('targetBtnNonlin').classList.toggle('active', tgt === 'nonlinear');
+      document.getElementById('targetBtnBias').classList.toggle('active', tgt === 'biases');
     }
 
-    function mutateNcaSeed() {
-      state.nca_seed = Math.random() * 1000.0;
-      if (state.nca_perturb < 0.1) {
-        state.nca_perturb = 0.25;
-        ncaSlider.value = 0.25;
+    async function mutateCandidate() {
+      try {
+        const res = await fetch('/api/genetic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'mutate',
+            target: geneticTarget,
+            scale: parseFloat(state.genetic_mutation_scale),
+            rate: parseFloat(state.genetic_mutation_rate)
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {}
+    }
+
+    async function cancelCandidate() {
+      try {
+        const res = await fetch('/api/genetic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'cancel' })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {}
+    }
+
+    async function reinforceCandidate() {
+      try {
+        const res = await fetch('/api/genetic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reinforce' })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {}
+    }
+
+    async function rollbackGeneration() {
+      try {
+        const res = await fetch('/api/genetic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'rollback' })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {}
+    }
+
+    async function resetToGen0() {
+      try {
+        const res = await fetch('/api/genetic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reset' })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {}
+    }
+
+    // --- Easter Egg Structure Imprint ---
+    function setImprintText(txt) {
+      imprintInput.value = txt;
+    }
+
+    async function triggerImprint() {
+      const msg = imprintInput.value.trim() || "BYOB";
+      imprintFeedback.innerText = "Imprinting...";
+      try {
+        const res = await fetch('/api/imprint', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: msg })
+        });
+        if (res.ok) {
+          imprintFeedback.innerText = "Imprinted: " + msg;
+          setTimeout(() => { imprintFeedback.innerText = "Ready"; }, 3000);
+        }
+      } catch (e) {
+        imprintFeedback.innerText = "Error";
       }
-      updateUI(state);
-      sendControls();
-    }
-
-    function resetNca() {
-      state.nca_perturb = 0.0;
-      state.nca_seed = 0.0;
-      state.nca_step_scale = 1.0;
-      ncaSlider.value = 0.0;
-      ncaStepSlider.value = 1.0;
-      updateUI(state);
-      sendControls();
     }
 
     async function pollStatus() {
@@ -1134,25 +1485,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
               freqMinSlider.value = data.freq_min;
               freqMaxSlider.value = data.freq_max;
             }
-            state.auto_speed = data.auto_speed;
-            state.auto_freq = data.auto_freq;
-            state.rhythm_division = data.rhythm_division;
-            state.detected_bpm = data.detected_bpm;
-            state.auto_gain = data.auto_gain;
-            state.scale = data.scale;
-            state.scale_type = data.scale_type;
-            if (data.waveform_mode !== undefined) state.waveform_mode = data.waveform_mode;
-            if (data.waveform_mode_name !== undefined) state.waveform_mode_name = data.waveform_mode_name;
-            if (data.rhythm_established !== undefined) state.rhythm_established = data.rhythm_established;
-            if (data.waveform_active !== undefined) state.waveform_active = data.waveform_active;
-            if (data.nca_perturb !== undefined) {
-              state.nca_perturb = data.nca_perturb;
-              ncaSlider.value = data.nca_perturb;
-            }
-            if (data.nca_step_scale !== undefined) {
-              state.nca_step_scale = data.nca_step_scale;
-              ncaStepSlider.value = data.nca_step_scale;
-            }
+            Object.assign(state, data);
             updateUI(state);
           }
         }
