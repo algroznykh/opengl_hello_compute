@@ -56,6 +56,10 @@ def main():
     assert "chBtn0" in html, "HTML should contain chBtn0 button"
     assert "chBtnPca" in html, "HTML should contain chBtnPca button for 3 main PCA components"
     assert "rerollBadge" in html, "HTML should contain rerollBadge for auto-reroll telemetry"
+    assert "dimRerollBtn" in html, "HTML should contain dimRerollBtn"
+    assert "criteriaBtn" in html, "HTML should contain criteriaBtn"
+    assert "toggleDimOnReroll" in html, "HTML should contain toggleDimOnReroll function"
+    assert "toggleRerollCriteria" in html, "HTML should contain toggleRerollCriteria function"
     assert "cancelCandidate" in html, "HTML should contain cancelCandidate button"
     assert "reinforceCandidate" in html, "HTML should contain reinforceCandidate button"
 
@@ -385,7 +389,54 @@ def main():
     post_json("/api/channel", {"channel": -1})
     print("  -> Auto-reroll engine verified.")
 
-    print("\nALL SPECTROGRAM INFLUENCE, STATE RESET, RANDOM RESET, SYNAPTIC WIRING, DIRECT CHANNELS, PCA RGB & AUTO-REROLL TESTS PASSED SUCCESSFULLY!")
+    print("[15] Testing Viewport Dimming on Re-roll & Eased Criteria (/api/reroll, /api/controls)...")
+    # Verify default status
+    status = json.loads(get("/api/status")[0])
+    assert status["nca_dim_on_reroll"] is True, "Dim on reroll should be true by default"
+    assert status["nca_eased_criteria"] is True, "Eased criteria should be true by default"
+    assert status["nca_reroll_grace_frames"] >= 20
+    assert "nca_viewport_dim" in status
+    print(f"  -> Default dimming & eased criteria status verified: dim={status['nca_dim_on_reroll']}, eased={status['nca_eased_criteria']}, dimFactor={status['nca_viewport_dim']:.2f}")
+
+    # Test toggling dim_on_reroll via /api/controls
+    res = post_json("/api/controls", {"dim_on_reroll": False})
+    assert res["nca_dim_on_reroll"] is False, "Expected dim_on_reroll False"
+    print("  -> Viewport dimming disabled via /api/controls.")
+
+    res = post_json("/api/controls", {"dim_on_reroll": True})
+    assert res["nca_dim_on_reroll"] is True, "Expected dim_on_reroll True"
+    print("  -> Viewport dimming enabled via /api/controls.")
+
+    # Test toggling criteria via /api/controls
+    res = post_json("/api/controls", {"eased_criteria": False})
+    assert res["nca_eased_criteria"] is False, "Expected eased_criteria False"
+    res = post_json("/api/controls", {"eased_criteria": True})
+    assert res["nca_eased_criteria"] is True, "Expected eased_criteria True"
+    print("  -> Criteria toggling verified via /api/controls.")
+
+    # Test dedicated /api/reroll endpoint
+    res = post_json("/api/reroll", {
+        "dim_on_reroll": True,
+        "eased_criteria": True,
+        "reroll_grace_frames": 40
+    })
+    assert res["nca_dim_on_reroll"] is True
+    assert res["nca_eased_criteria"] is True
+    assert res["nca_reroll_grace_frames"] == 40
+    print("  -> Dedicated /api/reroll endpoint configuration verified.")
+
+    # Test candidate stability under eased criteria (no infinite rerolling)
+    post_json("/api/genetic", {"action": "mutate", "scale": 0.15, "rate": 0.25})
+    time.sleep(1.0) # Wait 60 frames
+    status = json.loads(get("/api/status")[0])
+    assert status["genetic_has_candidate"] is True
+    assert status["nca_rerolls"] < 5, f"Eased criteria must not thrash in rerolls! Found {status['nca_rerolls']} rerolls"
+    print(f"  -> Candidate stability confirmed under eased criteria: candidate is active, rerolls={status['nca_rerolls']}.")
+
+    # Clean up candidate
+    post_json("/api/genetic", {"action": "cancel"})
+
+    print("\nALL SPECTROGRAM INFLUENCE, STATE RESET, RANDOM RESET, SYNAPTIC WIRING, DIRECT CHANNELS, PCA RGB, VIEWPORT DIMMING & EASED RE-ROLL TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     main()

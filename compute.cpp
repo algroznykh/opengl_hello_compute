@@ -170,9 +170,11 @@ public:
 
     int reroll() {
         rerollAttempts++;
+        float scaleMultiplier = std::pow(0.85f, (float)std::min(5, rerollAttempts - 1));
+        float effectiveScale = lastScale * scaleMultiplier;
         std::cout << "[Genetic Engine] Auto-rerolling candidate mutation (attempt " << rerollAttempts 
-                  << ", target=" << lastTarget << ", scale=" << lastScale << ", rate=" << lastRate << ")" << std::endl;
-        return mutate(lastTarget, lastScale, lastRate, false);
+                  << ", target=" << lastTarget << ", scale=" << effectiveScale << ", rate=" << lastRate << ")" << std::endl;
+        return mutate(lastTarget, effectiveScale, lastRate, false);
     }
 
     int mutate(const std::string& target, float scale, float rate, bool resetAttempts = true) {
@@ -453,12 +455,18 @@ struct NcaStateAnalyzer {
 
     struct AnalysisResult {
         bool hasCollapseOrExplosion = false;
+        bool isExplosion = false;
+        bool isCollapse = false;
         int defectiveChannel = -1;
         std::string defectiveReason;
         ChannelStats channels[12];
+        float maxAbsOverall = 0.0f;
+        float totalMeanAbs = 0.0f;
+        float visibleMeanAbs = 0.0f;
+        float visibleMaxVar = 0.0f;
     };
 
-    AnalysisResult analyze(unsigned int stateBufHandle, int texWidth, int texHeight) {
+    AnalysisResult analyze(unsigned int stateBufHandle, int texWidth, int texHeight, bool easedCriteria = true, bool checkCollapse = false) {
         AnalysisResult res;
         int sw = texWidth / 3;
         int sh = texHeight / 3;
@@ -479,6 +487,7 @@ struct NcaStateAnalyzer {
         double sumAbs[12] = {0};
         double sumSq[12] = {0};
         int satCount[12] = {0};
+        float maxAbsAll = 0.0f;
 
         for (int i = 0; i < totalCells; i += stride) {
             const float* cell = &stateBufferCopy[i * 12];
@@ -490,21 +499,26 @@ struct NcaStateAnalyzer {
                     res.channels[c].isExploded = true;
                     if (!res.hasCollapseOrExplosion) {
                         res.hasCollapseOrExplosion = true;
+                        res.isExplosion = true;
                         res.defectiveChannel = c;
                         res.defectiveReason = "NaN/Inf numerical explosion in channel " + std::to_string(c);
                     }
                 }
+                float av = std::abs(v);
+                if (av > maxAbsAll) maxAbsAll = av;
                 sum[c] += v;
-                sumAbs[c] += std::abs(v);
+                sumAbs[c] += av;
                 sumSq[c] += (double)v * (double)v;
-                if (std::abs(v) >= 1.48f) {
+                if (av >= 1.48f) {
                     satCount[c]++;
                 }
             }
         }
 
+        res.maxAbsOverall = maxAbsAll;
         if (numSamples == 0) return res;
 
+        int highlySaturatedChannels = 0;
         for (int c = 0; c < 12; c++) {
             ChannelStats& cs = res.channels[c];
             cs.mean = (float)(sum[c] / numSamples);
@@ -514,28 +528,66 @@ struct NcaStateAnalyzer {
             cs.variance = (float)(variance > 0.0 ? variance : 0.0);
             cs.saturatedFraction = (float)satCount[c] / (float)numSamples;
 
-            if (cs.isNanOrInf) continue;
-
-            // Check explosion: pegging to boundary
-            if (cs.saturatedFraction > 0.85f || cs.meanAbs > 1.45f) {
-                cs.isExploded = true;
-                if (!res.hasCollapseOrExplosion) {
-                    res.hasCollapseOrExplosion = true;
-                    res.defectiveChannel = c;
-                    res.defectiveReason = "Numerical explosion (pegged to clamp) in channel " + std::to_string(c)
-                                          + " (satFrac=" + std::to_string(cs.saturatedFraction) + ")";
-                }
+            res.totalMeanAbs += cs.meanAbs;
+            if (c < 4) {
+                res.visibleMeanAbs += cs.meanAbs;
+                if (cs.variance > res.visibleMaxVar) res.visibleMaxVar = cs.variance;
             }
+            if (cs.saturatedFraction > 0.90f) {
+                highlySaturatedChannels++;
+            }
+        }
 
-            // Check collapse: all cells flat or zeroed out
-            if (cs.meanAbs < 0.001f || cs.variance < 0.00005f) {
-                cs.isCollapsed = true;
-                if (!res.hasCollapseOrExplosion) {
+        if (!res.isExplosion) {
+            if (easedCriteria) {
+                // Eased explosion check:
+                // Explosion only if widespread blowout across multiple visible channels (pegged screen)
+                if ((highlySaturatedChannels >= 3 && res.visibleMaxVar < 0.015f) ||
+                    (res.visibleMeanAbs > 1.46f && res.visibleMaxVar * 4.0f < 0.005f)) {
                     res.hasCollapseOrExplosion = true;
-                    res.defectiveChannel = c;
-                    res.defectiveReason = "State collapse in channel " + std::to_string(c)
-                                          + " (meanAbs=" + std::to_string(cs.meanAbs)
-                                          + ", var=" + std::to_string(cs.variance) + ")";
+                    res.isExplosion = true;
+                    res.defectiveReason = "Numerical explosion (widespread solid saturation, satChannels=" 
+                                          + std::to_string(highlySaturatedChannels) + ", visVar=" + std::to_string(res.visibleMaxVar) + ")";
+                }
+
+                // Eased collapse check:
+                // Evaluated only after grace period (checkCollapse == true).
+                // Requires the ENTIRE state to be dead / evaporated!
+                // Dormant hidden channels are completely normal and NEVER trigger collapse.
+                if (checkCollapse) {
+                    if (res.maxAbsOverall < 0.015f) {
+                        res.hasCollapseOrExplosion = true;
+                        res.isCollapse = true;
+                        res.defectiveReason = "Complete state extinction (max cell activation across all channels = " 
+                                              + std::to_string(res.maxAbsOverall) + " < 0.015)";
+                    } else if (res.visibleMeanAbs < 0.0003f && res.totalMeanAbs < 0.0008f) {
+                        res.hasCollapseOrExplosion = true;
+                        res.isCollapse = true;
+                        res.defectiveReason = "Global state collapse (visibleMeanAbs=" + std::to_string(res.visibleMeanAbs) 
+                                              + ", totalMeanAbs=" + std::to_string(res.totalMeanAbs) + ")";
+                    }
+                }
+            } else {
+                // Strict criteria:
+                for (int c = 0; c < 12; c++) {
+                    if (res.channels[c].saturatedFraction > 0.90f && res.channels[c].meanAbs > 1.45f) {
+                        res.hasCollapseOrExplosion = true;
+                        res.isExplosion = true;
+                        res.defectiveChannel = c;
+                        res.defectiveReason = "Strict explosion check: channel " + std::to_string(c) + " saturated";
+                        break;
+                    }
+                }
+                if (checkCollapse && !res.hasCollapseOrExplosion) {
+                    for (int c = 0; c < 4; c++) {
+                        if (res.channels[c].meanAbs < 0.0005f || res.channels[c].variance < 0.00001f) {
+                            res.hasCollapseOrExplosion = true;
+                            res.isCollapse = true;
+                            res.defectiveChannel = c;
+                            res.defectiveReason = "Strict collapse check: visible channel " + std::to_string(c) + " collapsed";
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -1411,6 +1463,7 @@ int main(int argc, char* argv[]) {
     Shader screenQuad("screenQuad.vs", "screenQuad.fs");
     screenQuad.use();
     screenQuad.setInt("tex", 0);
+    screenQuad.setFloat("dim_factor", 1.0f);
 
     // Create main texture
     glGenTextures(1, &outputTexture);
@@ -1614,6 +1667,10 @@ int main(int argc, char* argv[]) {
             
             // Continuous radar phase integration (strictly monotonic forward rotation)
             static float radarPhase = 0.0f;
+            static float currentDimFactor = 1.0f;
+            static float targetDimFactor = 1.0f;
+            static float rerollDimTimer = 0.0f;
+
             float curSpeed = g_radarConfig.scanningSpeed.load();
             radarPhase += curSpeed * deltaTime;
             while (radarPhase >= 1.0f) radarPhase -= 1.0f;
@@ -1637,6 +1694,10 @@ int main(int argc, char* argv[]) {
             // Handle pending simulation state reset
             if (g_radarConfig.resetStateRequested.exchange(false)) {
                 resetSimulationState();
+                if (g_radarConfig.ncaDimOnReroll.load()) {
+                    currentDimFactor = 0.05f;
+                    rerollDimTimer = 0.35f;
+                }
             }
 
             // Handle pending genetic algorithm actions
@@ -1644,8 +1705,16 @@ int main(int argc, char* argv[]) {
             if (g_radarConfig.popPendingGenetic(genReq)) {
                 if (genReq.action == "mutate") {
                     g_geneticEngine.mutate(genReq.target, genReq.scale, genReq.rate);
+                    if (g_radarConfig.ncaDimOnReroll.load()) {
+                        currentDimFactor = 0.2f;
+                        rerollDimTimer = 0.25f;
+                    }
                 } else if (genReq.action == "mutate_everything") {
                     g_geneticEngine.mutate("everything", genReq.scale, 1.0f);
+                    if (g_radarConfig.ncaDimOnReroll.load()) {
+                        currentDimFactor = 0.1f;
+                        rerollDimTimer = 0.35f;
+                    }
                 } else if (genReq.action == "cancel" || genReq.action == "revert") {
                     g_geneticEngine.cancel();
                 } else if (genReq.action == "reinforce" || genReq.action == "commit" || genReq.action == "keep") {
@@ -1676,7 +1745,9 @@ int main(int argc, char* argv[]) {
             // State analysis for PCA components and collapse/explosion detection
             static int candidateAgeFrames = 0;
             static int analysisFrameCounter = 0;
+            static int rerollCooldownFrames = 0;
             analysisFrameCounter++;
+            if (rerollCooldownFrames > 0) rerollCooldownFrames--;
 
             if (g_geneticEngine.hasCandidate) {
                 candidateAgeFrames++;
@@ -1686,27 +1757,42 @@ int main(int argc, char* argv[]) {
                 g_radarConfig.ncaLastAutoRerolled.store(false);
             }
 
+            int graceFrames = g_radarConfig.ncaRerollGraceFrames.load();
+            bool checkCollapse = (g_geneticEngine.hasCandidate && candidateAgeFrames >= graceFrames);
+
             // Perform PCA & state analysis:
-            // Every 5 frames if PCA view (mode 13) or if candidate active (to detect collapse/explosion quickly),
-            // otherwise every 10 frames
-            bool needFrequentAnalysis = (g_radarConfig.ncaChannelView.load() == 13) || (g_geneticEngine.hasCandidate && candidateAgeFrames >= 6);
+            // Every 5 frames if PCA view (mode 13) or if candidate active, otherwise every 10 frames
+            bool needFrequentAnalysis = (g_radarConfig.ncaChannelView.load() == 13) || (g_geneticEngine.hasCandidate);
             int analysisInterval = needFrequentAnalysis ? 5 : 10;
 
             if (analysisFrameCounter >= analysisInterval) {
                 analysisFrameCounter = 0;
-                auto analysis = g_stateAnalyzer.analyze(stateBuffer, TEXTURE_WIDTH, TEXTURE_HEIGHT);
+                bool easedCriteria = g_radarConfig.ncaEasedCriteria.load();
+                auto analysis = g_stateAnalyzer.analyze(stateBuffer, TEXTURE_WIDTH, TEXTURE_HEIGHT, easedCriteria, checkCollapse);
 
-                // Auto-reroll check: if candidate has stepped for at least 8 frames and experiences collapse or explosion
-                if (g_radarConfig.ncaAutoRerollEnabled.load() && g_geneticEngine.hasCandidate && candidateAgeFrames >= 8) {
-                    if (analysis.hasCollapseOrExplosion && g_geneticEngine.rerollAttempts < 25) {
+                // Auto-reroll check: if candidate active and auto-reroll enabled
+                if (g_radarConfig.ncaAutoRerollEnabled.load() && g_geneticEngine.hasCandidate) {
+                    bool shouldReroll = false;
+                    if (analysis.isExplosion && candidateAgeFrames >= 3) {
+                        shouldReroll = true;
+                    } else if (analysis.isCollapse && checkCollapse && rerollCooldownFrames == 0) {
+                        shouldReroll = true;
+                    }
+
+                    if (shouldReroll && g_geneticEngine.rerollAttempts < 25) {
                         std::cout << "[Genetic Engine] State collapse / explosion detected: " 
                                   << analysis.defectiveReason << ". Auto-rerolling candidate!" << std::endl;
                         g_geneticEngine.reroll();
                         resetSimulationState();
+                        if (g_radarConfig.ncaDimOnReroll.load()) {
+                            currentDimFactor = 0.05f;
+                            rerollDimTimer = 0.45f;
+                        }
                         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ncaWeightBuffer);
                         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(NcaGpuGenome), &g_geneticEngine.getActiveGenome());
                         g_geneticEngine.dirty = false;
                         candidateAgeFrames = 0;
+                        rerollCooldownFrames = 40;
                         g_radarConfig.ncaRerollCount.store(g_geneticEngine.rerollAttempts);
                         g_radarConfig.ncaLastAutoRerolled.store(true);
                         g_radarConfig.ncaMutatedCount.store(g_geneticEngine.mutatedCount);
@@ -1783,9 +1869,27 @@ int main(int argc, char* argv[]) {
             glDispatchCompute((unsigned int)TEXTURE_WIDTH/10, (unsigned int)TEXTURE_HEIGHT/10, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
 
+            // Update dim factor for viewport (smooth transition during re-rolls to eliminate flickering)
+            if (rerollDimTimer > 0.0f) {
+                rerollDimTimer -= deltaTime;
+                targetDimFactor = 0.05f;
+            } else {
+                targetDimFactor = 1.0f;
+            }
+
+            if (g_radarConfig.ncaDimOnReroll.load()) {
+                float dimSpeed = (targetDimFactor < currentDimFactor) ? 35.0f : 3.5f;
+                currentDimFactor += (targetDimFactor - currentDimFactor) * std::min(1.0f, dimSpeed * deltaTime);
+            } else {
+                currentDimFactor = 1.0f;
+            }
+            currentDimFactor = std::max(0.0f, std::min(1.0f, currentDimFactor));
+            g_radarConfig.ncaViewportDim.store(currentDimFactor);
+
             // Render
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             screenQuad.use();
+            screenQuad.setFloat("dim_factor", currentDimFactor);
             renderQuad();
 
             glfwSwapBuffers(window);

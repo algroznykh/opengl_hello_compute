@@ -81,6 +81,10 @@ struct RadarConfig {
     std::atomic<int> ncaRerollCount{0};
     std::atomic<bool> ncaLastAutoRerolled{false};
     std::atomic<bool> ncaAutoRerollEnabled{true};
+    std::atomic<bool> ncaDimOnReroll{true};
+    std::atomic<float> ncaViewportDim{1.0f};
+    std::atomic<bool> ncaEasedCriteria{true};
+    std::atomic<int> ncaRerollGraceFrames{45};
 
     // Neural Wiring linkage ("fires together, wires together")
     std::atomic<int> ncaWiringLinks{0};
@@ -208,6 +212,10 @@ struct RadarConfig {
         ss << "  \"nca_rerolls\": " << ncaRerollCount.load() << ",\n";
         ss << "  \"nca_last_auto_rerolled\": " << (ncaLastAutoRerolled.load() ? "true" : "false") << ",\n";
         ss << "  \"nca_auto_reroll\": " << (ncaAutoRerollEnabled.load() ? "true" : "false") << ",\n";
+        ss << "  \"nca_dim_on_reroll\": " << (ncaDimOnReroll.load() ? "true" : "false") << ",\n";
+        ss << "  \"nca_viewport_dim\": " << ncaViewportDim.load() << ",\n";
+        ss << "  \"nca_eased_criteria\": " << (ncaEasedCriteria.load() ? "true" : "false") << ",\n";
+        ss << "  \"nca_reroll_grace_frames\": " << ncaRerollGraceFrames.load() << ",\n";
         ss << "  \"nca_wiring_links\": " << ncaWiringLinks.load() << ",\n";
         ss << "  \"nca_wiring_events\": " << ncaWiringEvents.load() << ",\n";
         ss << "  \"nca_max_wiring_strength\": " << ncaMaxWiringStrength.load() << ",\n";
@@ -659,6 +667,41 @@ private:
             return;
         }
 
+        // Re-roll settings endpoint
+        if (cleanPath == "/api/reroll") {
+            if (method == "POST") {
+                size_t bodyPos = request.find("\r\n\r\n");
+                std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
+                bool boolVal;
+                int intVal;
+                if (extractJsonBool(body, "dim_on_reroll", boolVal) || extractJsonBool(body, "nca_dim_on_reroll", boolVal) || extractJsonBool(body, "dim", boolVal)) {
+                    m_config.ncaDimOnReroll.store(boolVal);
+                }
+                if (extractJsonBool(body, "eased_criteria", boolVal) || extractJsonBool(body, "nca_eased_criteria", boolVal) || extractJsonBool(body, "eased", boolVal)) {
+                    m_config.ncaEasedCriteria.store(boolVal);
+                }
+                if (extractJsonBool(body, "auto_reroll", boolVal) || extractJsonBool(body, "nca_auto_reroll", boolVal)) {
+                    m_config.ncaAutoRerollEnabled.store(boolVal);
+                }
+                if (extractJsonInt(body, "reroll_grace_frames", intVal) || extractJsonInt(body, "grace_frames", intVal)) {
+                    if (intVal >= 5 && intVal <= 300) {
+                        m_config.ncaRerollGraceFrames.store(intVal);
+                    }
+                }
+            }
+            std::string resBody = m_config.toJson();
+            std::ostringstream response;
+            response << "HTTP/1.1 200 OK\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << resBody.length() << "\r\n"
+                     << cors
+                     << "Connection: close\r\n\r\n"
+                     << resBody;
+            std::string resStr = response.str();
+            send(clientFd, resStr.c_str(), resStr.length(), 0);
+            return;
+        }
+
         if (method == "POST" && cleanPath == "/api/controls") {
             size_t bodyPos = request.find("\r\n\r\n");
             std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
@@ -824,6 +867,17 @@ private:
             if (extractJsonFloat(body, "nca_cycle_interval", val) || extractJsonFloat(body, "cycle_interval", val)) {
                 if (val >= 0.1f && val <= 60.0f) {
                     m_config.ncaCycleInterval.store(val);
+                }
+            }
+            if (extractJsonBool(body, "nca_dim_on_reroll", boolVal) || extractJsonBool(body, "dim_on_reroll", boolVal) || extractJsonBool(body, "dim_viewport", boolVal)) {
+                m_config.ncaDimOnReroll.store(boolVal);
+            }
+            if (extractJsonBool(body, "nca_eased_criteria", boolVal) || extractJsonBool(body, "eased_criteria", boolVal) || extractJsonBool(body, "eased", boolVal)) {
+                m_config.ncaEasedCriteria.store(boolVal);
+            }
+            if (extractJsonInt(body, "nca_reroll_grace_frames", intVal) || extractJsonInt(body, "reroll_grace_frames", intVal)) {
+                if (intVal >= 5 && intVal <= 300) {
+                    m_config.ncaRerollGraceFrames.store(intVal);
                 }
             }
 
@@ -1261,8 +1315,22 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 
       <!-- Auto-Reroll on Collapse/Explosion Telemetry -->
       <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
-        <span style="font-size:0.75rem; color:var(--text-dim);">Auto-Reroll on Collapse:</span>
+        <span style="font-size:0.75rem; color:var(--text-dim);">Auto-Reroll Status:</span>
         <span id="rerollBadge" class="meta-row" style="margin:0; color:var(--accent); font-weight:600;">Active (0 rerolls)</span>
+      </div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
+        <span style="font-size:0.75rem; color:var(--text-dim);">Viewport Dimming:</span>
+        <span id="dimStatusLabel" class="meta-row" style="margin:0; color:var(--accent-cyan); font-weight:600;">Active (100% Brightness)</span>
+      </div>
+
+      <!-- Auto-Reroll & Anti-Flicker Controls: Dim Viewport & Eased Criteria -->
+      <div class="btn-row" style="margin-top:4px; gap:6px;">
+        <button id="dimRerollBtn" class="toggle-btn active" style="flex:1;" onclick="toggleDimOnReroll()" title="Smoothly dim viewport during re-roll settling to eliminate harsh flashing and flickering">
+          🌙 Dim on Re-roll (ON)
+        </button>
+        <button id="criteriaBtn" class="toggle-btn active" style="flex:1;" onclick="toggleRerollCriteria()" title="Toggle between Eased (tolerant, whole-state) and Strict re-roll criteria">
+          🛡️ Criteria: Eased
+        </button>
       </div>
 
       <!-- Target subsystem selector -->
@@ -1510,6 +1578,37 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         } else {
           rerollBadge.innerText = 'Active (0 rerolls)';
           rerollBadge.style.color = 'var(--accent)';
+        }
+      }
+
+      // Viewport dimming and criteria controls in UI
+      const dimBtn = document.getElementById('dimRerollBtn');
+      if (dimBtn && s.nca_dim_on_reroll !== undefined) {
+        state.nca_dim_on_reroll = !!s.nca_dim_on_reroll;
+        dimBtn.classList.toggle('active', state.nca_dim_on_reroll);
+        dimBtn.innerText = state.nca_dim_on_reroll ? '🌙 Dim on Re-roll (ON)' : '🌙 Dim on Re-roll (OFF)';
+      }
+
+      const critBtn = document.getElementById('criteriaBtn');
+      if (critBtn && s.nca_eased_criteria !== undefined) {
+        state.nca_eased_criteria = !!s.nca_eased_criteria;
+        critBtn.classList.toggle('active', state.nca_eased_criteria);
+        critBtn.innerText = state.nca_eased_criteria ? '🛡️ Criteria: Eased' : '⚡ Criteria: Strict';
+      }
+
+      const dimLabel = document.getElementById('dimStatusLabel');
+      if (dimLabel) {
+        const dimVal = s.nca_viewport_dim !== undefined ? s.nca_viewport_dim : (state.nca_viewport_dim !== undefined ? state.nca_viewport_dim : 1.0);
+        const pct = Math.round(dimVal * 100);
+        if (state.nca_dim_on_reroll === false) {
+          dimLabel.innerText = 'Disabled';
+          dimLabel.style.color = 'var(--text-dim)';
+        } else if (dimVal < 0.90) {
+          dimLabel.innerText = `Dimmed (${pct}% Brightness)`;
+          dimLabel.style.color = '#ffbb00';
+        } else {
+          dimLabel.innerText = 'Active (100% Brightness)';
+          dimLabel.style.color = 'var(--accent-cyan)';
         }
       }
 
@@ -1997,6 +2096,42 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'reset_wiring' })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {}
+    }
+
+    async function toggleDimOnReroll() {
+      const nextVal = state.nca_dim_on_reroll === undefined ? false : !state.nca_dim_on_reroll;
+      state.nca_dim_on_reroll = nextVal;
+      updateUI(state);
+      try {
+        const res = await fetch('/api/controls', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dim_on_reroll: nextVal })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {}
+    }
+
+    async function toggleRerollCriteria() {
+      const nextVal = state.nca_eased_criteria === undefined ? false : !state.nca_eased_criteria;
+      state.nca_eased_criteria = nextVal;
+      updateUI(state);
+      try {
+        const res = await fetch('/api/controls', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ eased_criteria: nextVal })
         });
         if (res.ok) {
           const data = await res.json();
