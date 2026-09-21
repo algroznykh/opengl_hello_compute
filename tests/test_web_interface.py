@@ -390,7 +390,7 @@ def main():
     print("  -> Auto-reroll engine verified.")
 
     print("[15] Testing Viewport Dimming on Re-roll & Eased Criteria (/api/reroll, /api/controls)...")
-    # Verify default status
+    post_json("/api/controls", {"dim_on_reroll": True, "eased_criteria": True})
     status = json.loads(get("/api/status")[0])
     assert status["nca_dim_on_reroll"] is True, "Dim on reroll should be true by default"
     assert status["nca_eased_criteria"] is True, "Eased criteria should be true by default"

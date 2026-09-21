@@ -515,10 +515,12 @@ void main() {
         }
 
         // Direct state dimming / damping directly in simulation buffer
-        float effStateDim = (nca_state_dim > 0.0) ? clamp(nca_state_dim, 0.01, 1.0) : 1.0;
-        if (effStateDim < 0.999) {
+        // nca_state_dim is in [0.0, 1.0]. A value < 1.0 physically cools the recurrence dynamics
+        float dimStrength = 1.0 - clamp(nca_state_dim, 0.0, 1.0);
+        if (dimStrength > 0.001) {
+            float cooling = 1.0 - dimStrength * 0.035; // gentle dissipation (up to ~3.5% per frame)
             for (uint s = 0u; s < N; s++) {
-                state[s] *= effStateDim;
+                state[s] *= cooling;
             }
         }
 

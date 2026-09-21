@@ -287,76 +287,88 @@ public:
 
     void regularizeAntiChaos(NcaGpuGenome& g) {
         // 1. Diagonal Homeostasis:
-        // In the trained model, W[c][c] (c in 0..11) are strongly negative (-800 to -3100),
+        // In the trained model, W[c][c] (c in 0..11) are strongly negative (-785 to -3107),
         // giving each channel strong dissipative self-damping.
-        // If a mutation pushes the diagonal above -400, negative feedback collapses and
-        // the network inevitably plunges into high-entropy dynamic chaos.
+        // Maintain negative diagonal homeostasis at <= -750.0f.
         for (int c = 0; c < 12; c++) {
             int diagIdx = c * 12 + c;
-            if (g.W[diagIdx] > -400.0f) {
-                g.W[diagIdx] = -400.0f - std::abs(g.W[diagIdx] + 400.0f) * 0.4f;
+            if (g.W[diagIdx] > -750.0f) {
+                g.W[diagIdx] = -750.0f - std::abs(g.W[diagIdx] + 750.0f) * 0.3f;
             }
             if (g.W[diagIdx] < -3500.0f) {
                 g.W[diagIdx] = -3500.0f;
             }
         }
 
-        // 2. Gershgorin Circle Spectral Radius Bound (Rows 0..11 - Linear State Recurrence):
-        // Bounding the real part of eigenvalues to prevent positive Lyapunov exponents.
-        // Cross-channel excitation sum_{j != r} |W[r][j]| must not overwhelm diagonal damping.
-        for (int r = 0; r < 12; r++) {
-            float diagVal = std::abs(g.W[r * 12 + r]);
+        // 2. Column-wise Cross-Channel Recurrence (Inputs 0..11 to Output c):
+        // Bounding cross-channel coupling so it cannot overwhelm diagonal self-damping.
+        for (int c = 0; c < 12; c++) {
+            float damping = std::abs(g.W[c * 12 + c]);
             float offDiagSum = 0.0f;
-            for (int c = 0; c < 12; c++) {
-                if (c != r) {
-                    offDiagSum += std::abs(g.W[r * 12 + c]);
+            for (int i = 0; i < 12; i++) {
+                if (i != c) {
+                    offDiagSum += std::abs(g.W[i * 12 + c]);
                 }
             }
-            float maxOffDiag = 1.25f * diagVal;
+            float maxOffDiag = 3.5f * damping;
             if (offDiagSum > maxOffDiag && offDiagSum > 1e-4f) {
                 float factor = maxOffDiag / offDiagSum;
-                for (int c = 0; c < 12; c++) {
-                    if (c != r) {
-                        g.W[r * 12 + c] *= factor;
+                for (int i = 0; i < 12; i++) {
+                    if (i != c) {
+                        g.W[i * 12 + c] *= factor;
                     }
                 }
             }
         }
 
-        // 3. Spatial Gradient Dissipation (Rows 12..23 - Linear Perception):
+        // 3. Spatial Gradient Gain & Dissipation (Inputs 12..23 - Sobel/Laplace to Output c):
         // Dynamic chaos feeds on runaway spatial gradient amplification.
-        // Ensure total perception gain per channel is smaller than its state damping.
+        // Ensure total perception gain per channel is bounded relative to its state damping.
         for (int c = 0; c < 12; c++) {
-            float stateDamping = std::abs(g.W[c * 12 + c]);
+            float damping = std::abs(g.W[c * 12 + c]);
             float percepSum = 0.0f;
-            for (int r = 12; r < 24; r++) {
-                percepSum += std::abs(g.W[r * 12 + c]);
+            for (int i = 12; i < 24; i++) {
+                percepSum += std::abs(g.W[i * 12 + c]);
             }
-            float maxPercep = stateDamping * 0.85f;
+            float maxPercep = 1.9f * damping;
             if (percepSum > maxPercep && percepSum > 1e-4f) {
                 float factor = maxPercep / percepSum;
-                for (int r = 12; r < 24; r++) {
-                    g.W[r * 12 + c] *= factor;
+                for (int i = 12; i < 24; i++) {
+                    g.W[i * 12 + c] *= factor;
                 }
             }
         }
 
-        // 4. Nonlinear Gradient Clamping (Rows 36..47 - |ps| terms):
-        // |ps| is strictly non-negative; large positive weights act as energy injectors.
+        // 4. Positive Nonlinear Terms & Biases Damping (Inputs 24..47: |x| and |ps|):
+        // |x| and |ps| are strictly non-negative. Positive weights act as persistent positive drift.
+        // If positive drift exceeds negative linear restoring force, the channel pegs to +1.5.
         for (int c = 0; c < 12; c++) {
-            for (int r = 36; r < 48; r++) {
-                int idx = r * 12 + c;
-                if (g.W[idx] > 350.0f) {
-                    g.W[idx] = 350.0f;
-                } else if (g.W[idx] < -350.0f) {
-                    g.W[idx] = -350.0f;
+            float damping = std::abs(g.W[c * 12 + c]);
+            float posSum = 0.0f;
+            for (int i = 24; i < 48; i++) {
+                if (g.W[i * 12 + c] > 0.0f) {
+                    posSum += g.W[i * 12 + c];
+                }
+            }
+            if (g.B[c] > 0.0f) posSum += g.B[c];
+
+            float maxPos = 2.4f * damping;
+            if (posSum > maxPos && posSum > 1e-4f) {
+                float factor = maxPos / posSum;
+                for (int i = 24; i < 48; i++) {
+                    if (g.W[i * 12 + c] > 0.0f) {
+                        g.W[i * 12 + c] *= factor;
+                    }
+                }
+                if (g.B[c] > 0.0f) {
+                    g.B[c] *= factor;
                 }
             }
         }
 
         // 5. Biases moderation: prevent hard saturation to clamp boundaries
         for (int c = 0; c < 12; c++) {
-            g.B[c] = std::max(-1100.0f, std::min(1100.0f, g.B[c]));
+            g.B[c] = std::max(-950.0f, std::min(950.0f, g.B[c]));
         }
     }
 
