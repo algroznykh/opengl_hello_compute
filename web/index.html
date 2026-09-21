@@ -259,23 +259,6 @@
       </div>
     </div>
 
-    <!-- Simulation State Reset -->
-    <div class="section">
-      <div class="section-head">
-        <span class="section-title">Simulation State</span>
-        <span id="stateResetFeedback" class="val" style="color:var(--accent-cyan); font-size:0.75rem;">Active</span>
-      </div>
-      <div class="btn-row">
-        <button class="toggle-btn" style="flex:1; border-color:#ff9900; color:#ffaa33;" onclick="resetSimulationStateBtn()" title="Clear canvas, backbuffer, and re-seed alive center patch">
-          🌀 Reset State
-        </button>
-      </div>
-      <div class="meta-row">
-        <span>State Reinitialization:</span>
-        <span>Clears Canvas &amp; Reseeds Center Core</span>
-      </div>
-    </div>
-
     <!-- NCA Topology: Cartesian vs Polar (Rotated Sobel Filters) with Reverse Pole options -->
     <div class="section">
       <div class="section-head">
@@ -328,6 +311,7 @@
       <div class="btn-row">
         <button class="btn active" id="chBtnComp" onclick="setNcaChannel(-1)" title="Standard composite output with purple/green color correction">Composite (CC)</button>
         <button class="btn" id="chBtnRgb" onclick="setNcaChannel(12)" title="Direct RGB output from channels 0, 1, 2 w/o color correction">Raw RGB (0..2)</button>
+        <button class="btn" id="chBtnPca" onclick="setNcaChannel(13)" title="3 main PCA components projected to RGB (w/o color correction)" style="border-color:#bb66ff; color:#dd88ff; font-weight:700;">🌈 PCA RGB (3 PCs)</button>
       </div>
 
       <div class="btn-row">
@@ -426,6 +410,12 @@
         <span id="wiringBadge" class="meta-row" style="margin:0; color:var(--accent-cyan); font-weight:600;">0 links (0 wired)</span>
       </div>
 
+      <!-- Auto-Reroll on Collapse/Explosion Telemetry -->
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
+        <span style="font-size:0.75rem; color:var(--text-dim);">Auto-Reroll on Collapse:</span>
+        <span id="rerollBadge" class="meta-row" style="margin:0; color:var(--accent); font-weight:600;">Active (0 rerolls)</span>
+      </div>
+
       <!-- Target subsystem selector -->
       <div style="display:flex; flex-direction:column; gap:3px;">
         <div class="meta-row"><span>Target Subsystem</span><span id="targetNameLabel">All (588)</span></div>
@@ -448,12 +438,17 @@
         <input type="range" id="mutRateSlider" min="0.05" max="1.00" step="0.05" value="0.25">
       </div>
 
-      <!-- Genetic Actions -->
-      <div class="btn-row" style="margin-top:4px;">
-        <button class="toggle-btn" style="flex:1.2;" onclick="mutateCandidate()">🎲 Mutate</button>
-        <button class="toggle-btn active" style="flex:1.6; border-color:#ffbb00; color:#ffcc33;" onclick="mutateEverything()" title="Mutate 100% of all weights and biases">💥 Mutate Everything</button>
+      <!-- Primary Core Command Row: Reset State, Mutate Everything, Reinforce close together -->
+      <div class="btn-row" style="margin-top:6px; gap:6px;">
+        <button class="toggle-btn" id="resetStateBtn" style="flex:1.0; border-color:#ff9900; color:#ffaa33; font-weight:700;" onclick="resetSimulationStateBtn()" title="Clear canvas, backbuffer, and re-seed alive center patch">🌀 Reset State</button>
+        <button class="toggle-btn active" style="flex:1.4; border-color:#ffbb00; color:#ffcc33; font-weight:700;" onclick="mutateEverything()" title="Mutate 100% of all weights and biases">💥 Mutate Everything</button>
+        <button class="btn" id="reinforceBtn" style="flex:1.1; border-color:var(--accent); color:var(--accent); font-weight:700;" onclick="reinforceCandidate()" title="Lock-in candidate as next generation and wire changed parameters together">✨ Reinforce</button>
+      </div>
+
+      <!-- Secondary Genetic Actions: Targeted Mutate & Cancel -->
+      <div class="btn-row" style="margin-top:3px; gap:6px;">
+        <button class="toggle-btn" style="flex:1.2;" onclick="mutateCandidate()" title="Mutate selected target subsystem">🎲 Mutate (Targeted)</button>
         <button class="btn" id="cancelBtn" style="flex:0.8; border-color:#ff4466; color:#ff7788;" onclick="cancelCandidate()" title="Cancel candidate and revert to baseline">❌ Cancel</button>
-        <button class="btn" id="reinforceBtn" style="flex:1.0; border-color:var(--accent); color:var(--accent); font-weight:700;" onclick="reinforceCandidate()" title="Lock-in candidate as next generation and wire changed parameters together">✨ Reinforce</button>
       </div>
 
       <div class="btn-row">
@@ -652,6 +647,23 @@
         wiringBadge.innerText = `${links} links (${events} reinforced)`;
       }
 
+      // Auto-reroll on collapse/explosion telemetry
+      const rerollBadge = document.getElementById('rerollBadge');
+      if (rerollBadge) {
+        const rerolls = s.nca_rerolls !== undefined ? s.nca_rerolls : 0;
+        const autoActive = s.nca_auto_reroll !== undefined ? s.nca_auto_reroll : true;
+        if (!autoActive) {
+          rerollBadge.innerText = 'Disabled';
+          rerollBadge.style.color = 'var(--text-dim)';
+        } else if (rerolls > 0) {
+          rerollBadge.innerText = `Active (${rerolls} auto-rerolled)`;
+          rerollBadge.style.color = '#ffbb00';
+        } else {
+          rerollBadge.innerText = 'Active (0 rerolls)';
+          rerollBadge.style.color = 'var(--accent)';
+        }
+      }
+
       if (!autoSpeedBtn.matches(':active') && s.auto_speed !== undefined) {
         autoSpeedBtn.classList.toggle('active', !!s.auto_speed);
       }
@@ -690,6 +702,9 @@
           } else if (ch === 12) {
             chLabel.innerText = 'Raw RGB (0..2)';
             if (chDesc) chDesc.innerText = 'Raw RGB channels 0, 1, 2 (No Color Correction)';
+          } else if (ch === 13) {
+            chLabel.innerText = 'PCA RGB (3 PCs)';
+            if (chDesc) chDesc.innerText = 'Top 3 Principal Components mapped to RGB (No Color Correction)';
           } else {
             chLabel.innerText = 'Channel ' + ch + ' (Direct)';
             if (chDesc) chDesc.innerText = 'Channel ' + ch + ' magnitude |state| (No Color Correction)';
@@ -697,6 +712,7 @@
         }
         document.getElementById('chBtnComp')?.classList.toggle('active', ch === -1);
         document.getElementById('chBtnRgb')?.classList.toggle('active', ch === 12);
+        document.getElementById('chBtnPca')?.classList.toggle('active', ch === 13);
         for (let c = 0; c < 12; c++) {
           document.getElementById('chBtn' + c)?.classList.toggle('active', ch === c);
         }

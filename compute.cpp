@@ -163,7 +163,26 @@ public:
         std::cout << "[Genetic Engine] Synaptic wiring matrix reset to zero" << std::endl;
     }
 
-    int mutate(const std::string& target, float scale, float rate) {
+    std::string lastTarget{"all"};
+    float lastScale{0.15f};
+    float lastRate{0.25f};
+    int rerollAttempts{0};
+
+    int reroll() {
+        rerollAttempts++;
+        std::cout << "[Genetic Engine] Auto-rerolling candidate mutation (attempt " << rerollAttempts 
+                  << ", target=" << lastTarget << ", scale=" << lastScale << ", rate=" << lastRate << ")" << std::endl;
+        return mutate(lastTarget, lastScale, lastRate, false);
+    }
+
+    int mutate(const std::string& target, float scale, float rate, bool resetAttempts = true) {
+        if (resetAttempts) {
+            rerollAttempts = 0;
+        }
+        lastTarget = target;
+        lastScale = scale;
+        lastRate = rate;
+
         candidate = baseline;
         lastMutatedIndices.clear();
         std::uniform_real_distribution<float> probDist(0.0f, 1.0f);
@@ -263,6 +282,7 @@ public:
             candidate = baseline;
             hasCandidate = false;
             mutatedCount = 0;
+            rerollAttempts = 0;
             lastMutatedIndices.clear();
             dirty = true;
         }
@@ -296,6 +316,7 @@ public:
 
             hasCandidate = false;
             mutatedCount = 0;
+            rerollAttempts = 0;
             lastMutatedIndices.clear();
             dirty = true;
         }
@@ -309,6 +330,7 @@ public:
             if (generation > 0) generation--;
             hasCandidate = false;
             mutatedCount = 0;
+            rerollAttempts = 0;
             lastMutatedIndices.clear();
             dirty = true;
             return true;
@@ -342,6 +364,288 @@ public:
 };
 
 NcaGeneticEngine g_geneticEngine;
+
+// --- Jacobi Eigenvalue Algorithm for 12x12 Symmetric Covariance Matrix ---
+inline void jacobi12x12(const float A[12][12], float eigenvals[12], float V[12][12]) {
+    float a[12][12];
+    for (int i = 0; i < 12; i++) {
+        for (int j = 0; j < 12; j++) {
+            a[i][j] = A[i][j];
+            V[i][j] = (i == j) ? 1.0f : 0.0f;
+        }
+    }
+
+    const int MAX_SWEEPS = 25;
+    for (int sweep = 0; sweep < MAX_SWEEPS; sweep++) {
+        float offDiagSum = 0.0f;
+        for (int i = 0; i < 12; i++) {
+            for (int j = i + 1; j < 12; j++) {
+                offDiagSum += std::abs(a[i][j]);
+            }
+        }
+        if (offDiagSum < 1e-6f) break;
+
+        for (int p = 0; p < 11; p++) {
+            for (int q = p + 1; q < 12; q++) {
+                float app = a[p][p];
+                float aqq = a[q][q];
+                float apq = a[p][q];
+                if (std::abs(apq) < 1e-7f) continue;
+
+                float theta = 0.5f * (aqq - app) / apq;
+                float t = 1.0f / (std::abs(theta) + std::sqrt(1.0f + theta * theta));
+                if (theta < 0.0f) t = -t;
+                float c = 1.0f / std::sqrt(1.0f + t * t);
+                float s = t * c;
+                float tau = s / (1.0f + c);
+
+                a[p][p] = app - t * apq;
+                a[q][q] = aqq + t * apq;
+                a[p][q] = 0.0f;
+                a[q][p] = 0.0f;
+
+                for (int r = 0; r < 12; r++) {
+                    if (r != p && r != q) {
+                        float arp = a[r][p];
+                        float arq = a[r][q];
+                        a[r][p] = arp - s * (arq + tau * arp);
+                        a[p][r] = a[r][p];
+                        a[r][q] = arq + s * (arp - tau * arq);
+                        a[q][r] = a[r][q];
+                    }
+                }
+
+                for (int r = 0; r < 12; r++) {
+                    float vrp = V[r][p];
+                    float vrq = V[r][q];
+                    V[r][p] = vrp - s * (vrq + tau * vrp);
+                    V[r][q] = vrq + s * (vrp - tau * vrq);
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < 12; i++) {
+        eigenvals[i] = a[i][i];
+    }
+}
+
+// --- NCA State Analyzer: Collapse/Explosion Detector & PCA 3-Component Extractor ---
+struct NcaStateAnalyzer {
+    float smoothMean[12] = {0};
+    float smoothPC1[12] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    float smoothPC2[12] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    float smoothPC3[12] = {0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    float smoothStd[3] = {0.5f, 0.5f, 0.5f};
+    bool initialized = false;
+
+    std::vector<float> stateBufferCopy;
+
+    struct ChannelStats {
+        float mean = 0.0f;
+        float meanAbs = 0.0f;
+        float variance = 0.0f;
+        float saturatedFraction = 0.0f;
+        bool isNanOrInf = false;
+        bool isCollapsed = false;
+        bool isExploded = false;
+    };
+
+    struct AnalysisResult {
+        bool hasCollapseOrExplosion = false;
+        int defectiveChannel = -1;
+        std::string defectiveReason;
+        ChannelStats channels[12];
+    };
+
+    AnalysisResult analyze(unsigned int stateBufHandle, int texWidth, int texHeight) {
+        AnalysisResult res;
+        int sw = texWidth / 3;
+        int sh = texHeight / 3;
+        int totalCells = sw * sh;
+        if (totalCells <= 0) return res;
+
+        size_t totalBytes = totalCells * 12 * sizeof(float);
+        if (stateBufferCopy.size() < (size_t)totalCells * 12) {
+            stateBufferCopy.resize(totalCells * 12);
+        }
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBufHandle);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, totalBytes, stateBufferCopy.data());
+
+        int stride = 2; // sample half of cells for fast statistics (~ 26,600 samples)
+        int numSamples = 0;
+        double sum[12] = {0};
+        double sumAbs[12] = {0};
+        double sumSq[12] = {0};
+        int satCount[12] = {0};
+
+        for (int i = 0; i < totalCells; i += stride) {
+            const float* cell = &stateBufferCopy[i * 12];
+            numSamples++;
+            for (int c = 0; c < 12; c++) {
+                float v = cell[c];
+                if (std::isnan(v) || std::isinf(v)) {
+                    res.channels[c].isNanOrInf = true;
+                    res.channels[c].isExploded = true;
+                    if (!res.hasCollapseOrExplosion) {
+                        res.hasCollapseOrExplosion = true;
+                        res.defectiveChannel = c;
+                        res.defectiveReason = "NaN/Inf numerical explosion in channel " + std::to_string(c);
+                    }
+                }
+                sum[c] += v;
+                sumAbs[c] += std::abs(v);
+                sumSq[c] += (double)v * (double)v;
+                if (std::abs(v) >= 1.48f) {
+                    satCount[c]++;
+                }
+            }
+        }
+
+        if (numSamples == 0) return res;
+
+        for (int c = 0; c < 12; c++) {
+            ChannelStats& cs = res.channels[c];
+            cs.mean = (float)(sum[c] / numSamples);
+            cs.meanAbs = (float)(sumAbs[c] / numSamples);
+            double meanVal = sum[c] / numSamples;
+            double variance = (sumSq[c] / numSamples) - (meanVal * meanVal);
+            cs.variance = (float)(variance > 0.0 ? variance : 0.0);
+            cs.saturatedFraction = (float)satCount[c] / (float)numSamples;
+
+            if (cs.isNanOrInf) continue;
+
+            // Check explosion: pegging to boundary
+            if (cs.saturatedFraction > 0.85f || cs.meanAbs > 1.45f) {
+                cs.isExploded = true;
+                if (!res.hasCollapseOrExplosion) {
+                    res.hasCollapseOrExplosion = true;
+                    res.defectiveChannel = c;
+                    res.defectiveReason = "Numerical explosion (pegged to clamp) in channel " + std::to_string(c)
+                                          + " (satFrac=" + std::to_string(cs.saturatedFraction) + ")";
+                }
+            }
+
+            // Check collapse: all cells flat or zeroed out
+            if (cs.meanAbs < 0.001f || cs.variance < 0.00005f) {
+                cs.isCollapsed = true;
+                if (!res.hasCollapseOrExplosion) {
+                    res.hasCollapseOrExplosion = true;
+                    res.defectiveChannel = c;
+                    res.defectiveReason = "State collapse in channel " + std::to_string(c)
+                                          + " (meanAbs=" + std::to_string(cs.meanAbs)
+                                          + ", var=" + std::to_string(cs.variance) + ")";
+                }
+            }
+        }
+
+        // Compute PCA on the 12-dimensional state distribution
+        float meanVec[12];
+        for (int c = 0; c < 12; c++) {
+            meanVec[c] = res.channels[c].mean;
+        }
+
+        float cov[12][12];
+        memset(cov, 0, sizeof(cov));
+        int covStride = stride * 2; // stride 4 (~ 13,300 samples)
+        int covSamples = 0;
+        for (int i = 0; i < totalCells; i += covStride) {
+            const float* cell = &stateBufferCopy[i * 12];
+            covSamples++;
+            float diff[12];
+            for (int c = 0; c < 12; c++) {
+                diff[c] = cell[c] - meanVec[c];
+            }
+            for (int r = 0; r < 12; r++) {
+                for (int c = r; c < 12; c++) {
+                    cov[r][c] += diff[r] * diff[c];
+                }
+            }
+        }
+        if (covSamples > 1) {
+            for (int r = 0; r < 12; r++) {
+                for (int c = r; c < 12; c++) {
+                    cov[r][c] /= (float)(covSamples - 1);
+                    cov[c][r] = cov[r][c]; // symmetric
+                }
+            }
+        }
+
+        // Jacobi solver on 12x12 covariance matrix
+        float eigenvals[12];
+        float V[12][12];
+        jacobi12x12(cov, eigenvals, V);
+
+        // Sort eigenvalues descending
+        int sortIdx[12];
+        for (int i = 0; i < 12; i++) sortIdx[i] = i;
+        std::sort(sortIdx, sortIdx + 12, [&](int a, int b) {
+            return eigenvals[a] > eigenvals[b];
+        });
+
+        // Top 3 eigenvectors
+        float pc1[12], pc2[12], pc3[12];
+        for (int r = 0; r < 12; r++) {
+            pc1[r] = V[r][sortIdx[0]];
+            pc2[r] = V[r][sortIdx[1]];
+            pc3[r] = V[r][sortIdx[2]];
+        }
+        float std1 = std::sqrt(std::max(0.001f, eigenvals[sortIdx[0]]));
+        float std2 = std::sqrt(std::max(0.001f, eigenvals[sortIdx[1]]));
+        float std3 = std::sqrt(std::max(0.001f, eigenvals[sortIdx[2]]));
+
+        // Temporal smoothing
+        if (!initialized) {
+            for (int c = 0; c < 12; c++) {
+                smoothMean[c] = meanVec[c];
+                smoothPC1[c] = pc1[c];
+                smoothPC2[c] = pc2[c];
+                smoothPC3[c] = pc3[c];
+            }
+            smoothStd[0] = std1;
+            smoothStd[1] = std2;
+            smoothStd[2] = std3;
+            initialized = true;
+        } else {
+            auto alignSign = [](float* vec, const float* prev) {
+                float dot = 0.0f;
+                for (int c = 0; c < 12; c++) dot += vec[c] * prev[c];
+                if (dot < 0.0f) {
+                    for (int c = 0; c < 12; c++) vec[c] = -vec[c];
+                }
+            };
+            alignSign(pc1, smoothPC1);
+            alignSign(pc2, smoothPC2);
+            alignSign(pc3, smoothPC3);
+
+            float alpha = 0.20f;
+            for (int c = 0; c < 12; c++) {
+                smoothMean[c] += alpha * (meanVec[c] - smoothMean[c]);
+                smoothPC1[c] += alpha * (pc1[c] - smoothPC1[c]);
+                smoothPC2[c] += alpha * (pc2[c] - smoothPC2[c]);
+                smoothPC3[c] += alpha * (pc3[c] - smoothPC3[c]);
+            }
+            auto normalizeVec = [](float* vec) {
+                float normSq = 0.0f;
+                for (int c = 0; c < 12; c++) normSq += vec[c] * vec[c];
+                float invNorm = 1.0f / std::sqrt(std::max(1e-6f, normSq));
+                for (int c = 0; c < 12; c++) vec[c] *= invNorm;
+            };
+            normalizeVec(smoothPC1);
+            normalizeVec(smoothPC2);
+            normalizeVec(smoothPC3);
+
+            smoothStd[0] += alpha * (std1 - smoothStd[0]);
+            smoothStd[1] += alpha * (std2 - smoothStd[1]);
+            smoothStd[2] += alpha * (std3 - smoothStd[2]);
+        }
+
+        return res;
+    }
+};
+
+static NcaStateAnalyzer g_stateAnalyzer;
 
 void imprintTextMessage(const std::string& msg) {
     if (msg.empty() || TEXTURE_WIDTH == 0 || TEXTURE_HEIGHT == 0) return;
@@ -1369,6 +1673,47 @@ int main(int argc, char* argv[]) {
                 g_geneticEngine.dirty = false;
             }
 
+            // State analysis for PCA components and collapse/explosion detection
+            static int candidateAgeFrames = 0;
+            static int analysisFrameCounter = 0;
+            analysisFrameCounter++;
+
+            if (g_geneticEngine.hasCandidate) {
+                candidateAgeFrames++;
+            } else {
+                candidateAgeFrames = 0;
+                g_radarConfig.ncaRerollCount.store(0);
+                g_radarConfig.ncaLastAutoRerolled.store(false);
+            }
+
+            // Perform PCA & state analysis:
+            // Every 5 frames if PCA view (mode 13) or if candidate active (to detect collapse/explosion quickly),
+            // otherwise every 10 frames
+            bool needFrequentAnalysis = (g_radarConfig.ncaChannelView.load() == 13) || (g_geneticEngine.hasCandidate && candidateAgeFrames >= 6);
+            int analysisInterval = needFrequentAnalysis ? 5 : 10;
+
+            if (analysisFrameCounter >= analysisInterval) {
+                analysisFrameCounter = 0;
+                auto analysis = g_stateAnalyzer.analyze(stateBuffer, TEXTURE_WIDTH, TEXTURE_HEIGHT);
+
+                // Auto-reroll check: if candidate has stepped for at least 8 frames and experiences collapse or explosion
+                if (g_radarConfig.ncaAutoRerollEnabled.load() && g_geneticEngine.hasCandidate && candidateAgeFrames >= 8) {
+                    if (analysis.hasCollapseOrExplosion && g_geneticEngine.rerollAttempts < 25) {
+                        std::cout << "[Genetic Engine] State collapse / explosion detected: " 
+                                  << analysis.defectiveReason << ". Auto-rerolling candidate!" << std::endl;
+                        g_geneticEngine.reroll();
+                        resetSimulationState();
+                        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ncaWeightBuffer);
+                        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(NcaGpuGenome), &g_geneticEngine.getActiveGenome());
+                        g_geneticEngine.dirty = false;
+                        candidateAgeFrames = 0;
+                        g_radarConfig.ncaRerollCount.store(g_geneticEngine.rerollAttempts);
+                        g_radarConfig.ncaLastAutoRerolled.store(true);
+                        g_radarConfig.ncaMutatedCount.store(g_geneticEngine.mutatedCount);
+                    }
+                }
+            }
+
             // Channel auto-cycling logic
             static float channelCycleTimer = 0.0f;
             if (g_radarConfig.ncaAutoCycleChannels.load()) {
@@ -1395,6 +1740,11 @@ int main(int argc, char* argv[]) {
             currentComputeShader->setInt("scale_type", g_radarConfig.scaleType.load());
             currentComputeShader->setFloat("spectrogram_influence", g_radarConfig.spectrogramInfluence.load());
             currentComputeShader->setInt("nca_channel_view", g_radarConfig.ncaChannelView.load());
+            currentComputeShader->setFloatArray("pca_pc1", g_stateAnalyzer.smoothPC1, 12);
+            currentComputeShader->setFloatArray("pca_pc2", g_stateAnalyzer.smoothPC2, 12);
+            currentComputeShader->setFloatArray("pca_pc3", g_stateAnalyzer.smoothPC3, 12);
+            currentComputeShader->setFloatArray("pca_mean", g_stateAnalyzer.smoothMean, 12);
+            currentComputeShader->setVec3("pca_std", g_stateAnalyzer.smoothStd[0], g_stateAnalyzer.smoothStd[1], g_stateAnalyzer.smoothStd[2]);
             currentComputeShader->setFloat("nca_perturb", g_radarConfig.ncaPerturb.load());
             currentComputeShader->setFloat("nca_seed", g_radarConfig.ncaSeed.load());
             currentComputeShader->setFloat("nca_step_scale", g_radarConfig.ncaStepScale.load());

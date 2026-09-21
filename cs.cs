@@ -23,7 +23,12 @@ uniform float nca_topology; // 0.0 = Cartesian, 1.0 = Polar (pole in center)
 uniform float nca_pole_radial;    // +1.0 = outward pole, -1.0 = reversed/inward pole
 uniform float nca_pole_azimuthal; // +1.0 = standard CCW spin, -1.0 = reversed CW spin
 uniform float spectrogram_influence; // Controls how much spectrogram affects NCA state & beam visibility (0.0 to 2.0)
-uniform int nca_channel_view;         // -1 = composite (normal), 0..11 = direct channel w/o color correction, 12 = raw RGB
+uniform int nca_channel_view;         // -1 = composite, 0..11 = direct channel w/o CC, 12 = raw RGB, 13 = 3 main PCA components for RGB
+uniform float pca_pc1[12];            // 1st Principal Component (Red)
+uniform float pca_pc2[12];            // 2nd Principal Component (Green)
+uniform float pca_pc3[12];            // 3rd Principal Component (Blue)
+uniform float pca_mean[12];           // 12-channel mean vector
+uniform vec3 pca_std;                 // Standard deviations of top 3 PCs for contrast normalization
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
@@ -529,6 +534,21 @@ void main() {
         xrgb = vec4(clamp(abs(states_out[0]), 0.0, 1.5),
                     clamp(abs(states_out[1]), 0.0, 1.5),
                     clamp(abs(states_out[2]), 0.0, 1.5), 1.0);
+    } else if (nca_channel_view == 13) {
+        // 3 main PCA components projected to RGB (w/o color correction)
+        float r_proj = 0.0;
+        float g_proj = 0.0;
+        float b_proj = 0.0;
+        for (int c = 0; c < 12; c++) {
+            float centered = states_out[c] - pca_mean[c];
+            r_proj += centered * pca_pc1[c];
+            g_proj += centered * pca_pc2[c];
+            b_proj += centered * pca_pc3[c];
+        }
+        float r_val = clamp(r_proj / (2.5 * max(0.05, pca_std.x)) + 0.5, 0.0, 1.0);
+        float g_val = clamp(g_proj / (2.5 * max(0.05, pca_std.y)) + 0.5, 0.0, 1.0);
+        float b_val = clamp(b_proj / (2.5 * max(0.05, pca_std.z)) + 0.5, 0.0, 1.0);
+        xrgb = vec4(r_val, g_val, b_val, 1.0);
     } else {
         // Default composite with color correction
         xrgb = vec4(states_out[3], states_out[0], states_out[3], states_out[3]);
