@@ -168,10 +168,8 @@ void setSimulationResolution(int newW, int newH, bool resample = true) {
 
     g_simWidth = newW;
     g_simHeight = newH;
-    if (!g_radarConfig.hasPendingSimulationResolution()) {
-        g_radarConfig.simWidth.store(newW);
-        g_radarConfig.simHeight.store(newH);
-    }
+    g_radarConfig.simWidth.store(newW);
+    g_radarConfig.simHeight.store(newH);
     std::cout << "[Simulation] Resolution updated to: " << newW << "x" << newH 
               << " (resampled=" << (resample ? "true" : "false") << ")" << std::endl;
 }
@@ -285,15 +283,18 @@ struct NcaStateAnalyzer {
         int totalCells = sw * sh;
         if (totalCells <= 0) return res;
 
-        size_t totalBytes = totalCells * 12 * sizeof(float);
-        if (stateBufferCopy.size() < (size_t)totalCells * 12) {
-            stateBufferCopy.resize(totalCells * 12);
+        // Optimized readback: sample up to 54,000 cells for fast statistics (~27,000 samples)
+        // and eliminate GPU pipeline stalls and CPU spikes on high sim resolutions
+        int cellsToSample = std::min(totalCells, 54000);
+        size_t bytesToRead = (size_t)cellsToSample * 12 * sizeof(float);
+        if (stateBufferCopy.size() < (size_t)cellsToSample * 12) {
+            stateBufferCopy.resize(cellsToSample * 12);
         }
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBufHandle);
-        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, totalBytes, stateBufferCopy.data());
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, bytesToRead, stateBufferCopy.data());
 
-        int stride = 2; // sample half of cells for fast statistics (~ 26,600 samples)
+        int stride = 2; // sample half of cells for fast statistics (~ 27,000 samples)
         int numSamples = 0;
         double sum[12] = {0};
         double sumAbs[12] = {0};
@@ -303,12 +304,12 @@ struct NcaStateAnalyzer {
         double sumGradSq = 0.0;
         int gradSamples = 0;
 
-        for (int i = 0; i < totalCells; i += stride) {
+        for (int i = 0; i < cellsToSample; i += stride) {
             const float* cell = &stateBufferCopy[i * 12];
             numSamples++;
 
             // Measure horizontal spatial roughness between adjacent samples
-            if (i + stride < totalCells) {
+            if (i + stride < cellsToSample) {
                 float dx0 = stateBufferCopy[(i + stride) * 12 + 0] - cell[0];
                 float dx3 = stateBufferCopy[(i + stride) * 12 + 3] - cell[3];
                 sumGradSq += (double)dx0 * dx0 + (double)dx3 * dx3;
@@ -415,9 +416,9 @@ struct NcaStateAnalyzer {
 
         float cov[12][12];
         memset(cov, 0, sizeof(cov));
-        int covStride = stride * 2; // stride 4 (~ 13,300 samples)
+        int covStride = stride * 2; // stride 4 (~ 13,500 samples)
         int covSamples = 0;
-        for (int i = 0; i < totalCells; i += covStride) {
+        for (int i = 0; i < cellsToSample; i += covStride) {
             const float* cell = &stateBufferCopy[i * 12];
             covSamples++;
             float diff[12];
@@ -606,10 +607,13 @@ void rerollPcaPalette() {
 
 void setPcaHueShift(float degrees) {
     std::lock_guard<std::mutex> lock(g_pcaPaletteMutex);
-    g_pcaHueShift = std::fmod(degrees, 360.0f);
-    if (g_pcaHueShift < 0.0f) g_pcaHueShift += 360.0f;
-    g_radarConfig.pcaHueShift.store(g_pcaHueShift);
-    updatePcaPaletteMatrix();
+    float newHue = std::fmod(degrees, 360.0f);
+    if (newHue < 0.0f) newHue += 360.0f;
+    if (std::abs(newHue - g_pcaHueShift) > 0.001f) {
+        g_pcaHueShift = newHue;
+        g_radarConfig.pcaHueShift.store(g_pcaHueShift);
+        updatePcaPaletteMatrix();
+    }
 }
 
 void shiftPcaPalette(float deltaDegrees) {
@@ -1555,10 +1559,15 @@ int main(int argc, char* argv[]) {
         currentFrame = glfwGetTime();
         deltaTime = currentFrame - lastFrame;
 
-        // Cap FPS
+        // Cap FPS with high precision sleep and spin-wait to prevent OS timer oversleeping and jitter
         if (deltaTime < FRAME_TIME) {
             float sleepTime = FRAME_TIME - deltaTime;
-            glfwWaitEventsTimeout(sleepTime);
+            if (sleepTime > 0.0025f) {
+                std::this_thread::sleep_for(std::chrono::duration<float>(sleepTime - 0.0020f));
+            }
+            while ((glfwGetTime() - lastFrame) < FRAME_TIME) {
+                // Short sub-millisecond spin-wait for rock-solid 60 FPS
+            }
             currentFrame = glfwGetTime();
             deltaTime = currentFrame - lastFrame;
         }
@@ -1616,9 +1625,21 @@ int main(int argc, char* argv[]) {
             static float rerollDimTimer = 0.0f;
 
             float curSpeed = g_radarConfig.scanningSpeed.load();
-            radarPhase += curSpeed * deltaTime;
+            float scanDelta = curSpeed * deltaTime;
+            radarPhase += scanDelta;
             while (radarPhase >= 1.0f) radarPhase -= 1.0f;
             while (radarPhase < 0.0f) radarPhase += 1.0f;
+
+            // Auto Decay Calibration: calibrate decay rate so perturbation decays consistently w.r.t. scanning speed
+            if (g_radarConfig.autoDecay.load()) {
+                float effectiveSpeed = std::max(0.05f, curSpeed);
+                float speedScale = g_radarConfig.decaySpeedScale.load();
+                // At base speed 0.50 rev/s, decay is 0.9700. As scanning speed increases,
+                // decay rate scales proportionally so the angular tail remains constant.
+                float calibratedDecay = std::pow(0.9700f, (effectiveSpeed / 0.50f) * speedScale);
+                calibratedDecay = std::max(0.50f, std::min(0.9995f, calibratedDecay));
+                g_radarConfig.decayTime.store(calibratedDecay);
+            }
 
             // Check for pending PCA palette re-roll / hue shift
             if (g_radarConfig.pcaRerollRequested.exchange(false)) {
@@ -1685,6 +1706,7 @@ int main(int argc, char* argv[]) {
             // Set radar shader controls from web interface
             currentComputeShader->setFloat("scan_phase", radarPhase);
             currentComputeShader->setFloat("scan_speed", curSpeed);
+            currentComputeShader->setFloat("scan_delta", scanDelta);
             currentComputeShader->setFloat("decay_time", g_radarConfig.decayTime.load());
             currentComputeShader->setVec2("freq_range", g_radarConfig.freqRangeMin.load(), g_radarConfig.freqRangeMax.load());
             currentComputeShader->setFloat("freq_min_hz", g_radarConfig.freqMinHz.load());

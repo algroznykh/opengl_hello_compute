@@ -412,17 +412,44 @@
     </div>
 
     <!-- Decay Time -->
+    <!-- Decay Persistence & Speed Control -->
     <div class="section">
       <div class="section-head">
-        <span class="section-title">Decay Persistence</span>
+        <span class="section-title">Decay Persistence & Speed</span>
         <span id="decayVal" class="val">0.9700</span>
       </div>
-      <input type="range" id="decaySlider" min="0.8000" max="0.9995" step="0.0005" value="0.9700">
+
+      <!-- Decay Speed Controls: 2x / 4x Buttons -->
+      <div style="display:flex; flex-direction:column; gap:3px;">
+        <div class="meta-row">
+          <span>Decay Speed:</span>
+          <span id="decaySpeedVal" class="val" style="color:var(--accent-cyan); font-weight:700;">1.00x</span>
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="decaySpeedBtn05" onclick="setDecaySpeed(0.5)" title="0.5x Slower Decay (Longer persistence)">0.5x</button>
+          <button class="btn active" id="decaySpeedBtn1" onclick="setDecaySpeed(1.0)" title="1x Normal Decay Speed">1x</button>
+          <button class="btn" id="decaySpeedBtn2" onclick="setDecaySpeed(2.0)" title="2x Faster Decay Speed">2x</button>
+          <button class="btn" id="decaySpeedBtn4" onclick="setDecaySpeed(4.0)" title="4x Faster Decay Speed">4x</button>
+        </div>
+      </div>
+
+      <div class="meta-row" style="margin-top:4px;">
+        <span>Radar Trail Persistence:</span>
+        <span id="decayLabel" class="val" style="color:var(--accent); font-weight:700;">Medium (0.9700)</span>
+      </div>
       <div class="btn-row">
         <button class="btn" id="decayFastBtn" onclick="setDecay(0.9200)">Fast</button>
         <button class="btn active" id="decayMedBtn" onclick="setDecay(0.9700)">Medium</button>
         <button class="btn" id="decayDefBtn" onclick="setDecay(0.9950)">Default</button>
         <button class="btn" id="decayLongBtn" onclick="setDecay(0.9990)">Long Glow</button>
+      </div>
+      <input type="range" id="decaySlider" min="0.8000" max="0.9995" step="0.0005" value="0.9700">
+
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
+        <button id="autoDecayBtn" class="toggle-btn active" onclick="toggleAutoDecay()" title="Automatically calibrate decay persistence to scanning speed so perturbation decays consistently w.r.t. radar rotation">
+          ⚡ Auto Decay Calibrate
+        </button>
+        <span id="autoDecayStatus" class="meta-row" style="margin:0; font-size:0.75rem;">Sync to Sweep</span>
       </div>
     </div>
 
@@ -603,7 +630,9 @@
       custom_channel_g: 1,
       custom_channel_b: 2,
       pca_hue_shift: 0.0,
-      spectrogram_scale: 1.0
+      spectrogram_scale: 1.0,
+      auto_decay: true,
+      decay_speed: 1.0
     };
 
     const connDot = document.getElementById('connDot');
@@ -622,6 +651,9 @@
     const specInfluenceVal = document.getElementById('specInfluenceVal');
     const specScaleVal = document.getElementById('specScaleVal');
     const decayVal = document.getElementById('decayVal');
+    const decaySpeedVal = document.getElementById('decaySpeedVal');
+    const autoDecayBtn = document.getElementById('autoDecayBtn');
+    const autoDecayStatus = document.getElementById('autoDecayStatus');
     const freqRangeVal = document.getElementById('freqRangeVal');
     const minFreqVal = document.getElementById('minFreqVal');
     const maxFreqVal = document.getElementById('maxFreqVal');
@@ -652,7 +684,8 @@
         }
       }
       if (s.decay_time !== undefined) {
-        const dt = Number(s.decay_time);
+        state.decay_time = Number(s.decay_time);
+        const dt = state.decay_time;
         decayVal.innerText = dt.toFixed(4);
         if (decaySlider && !decaySlider.matches(':active')) {
           decaySlider.value = dt;
@@ -661,6 +694,20 @@
         document.getElementById('decayMedBtn')?.classList.toggle('active', Math.abs(dt - 0.9700) < 0.005);
         document.getElementById('decayDefBtn')?.classList.toggle('active', Math.abs(dt - 0.9950) < 0.002);
         document.getElementById('decayLongBtn')?.classList.toggle('active', Math.abs(dt - 0.9990) < 0.002);
+      }
+      if (s.decay_speed !== undefined) {
+        state.decay_speed = parseFloat(s.decay_speed);
+        const ds = state.decay_speed;
+        if (decaySpeedVal) decaySpeedVal.innerText = ds.toFixed(2) + 'x';
+        document.getElementById('decaySpeedBtn05')?.classList.toggle('active', Math.abs(ds - 0.5) < 0.05);
+        document.getElementById('decaySpeedBtn1')?.classList.toggle('active', Math.abs(ds - 1.0) < 0.05);
+        document.getElementById('decaySpeedBtn2')?.classList.toggle('active', Math.abs(ds - 2.0) < 0.05);
+        document.getElementById('decaySpeedBtn4')?.classList.toggle('active', Math.abs(ds - 4.0) < 0.05);
+      }
+      if (s.auto_decay !== undefined) {
+        state.auto_decay = !!s.auto_decay;
+        autoDecayBtn?.classList.toggle('active', state.auto_decay);
+        if (autoDecayStatus) autoDecayStatus.innerText = state.auto_decay ? 'Calibrated to Speed' : 'Manual Decay';
       }
       if (s.freq_min !== undefined) minFreqVal.innerText = Math.round(s.freq_min) + ' Hz';
       if (s.freq_max !== undefined) maxFreqVal.innerText = Math.round(s.freq_max) + ' Hz';
@@ -895,6 +942,8 @@
         const payload = {
           scanning_speed: parseFloat(state.scanning_speed),
           decay_time: parseFloat(state.decay_time),
+          auto_decay: !!state.auto_decay,
+          decay_speed: parseFloat(state.decay_speed !== undefined ? state.decay_speed : 1.0),
           spectrogram_influence: parseFloat(state.spectrogram_influence !== undefined ? state.spectrogram_influence : 1.0),
           spectrogram_scale: parseFloat(state.spectrogram_scale !== undefined ? state.spectrogram_scale : 1.0),
           freq_min: parseFloat(state.freq_min),
@@ -962,6 +1011,10 @@
       state.scanning_speed = parseFloat(speedSlider.value);
       state.auto_speed = false;
       autoSpeedBtn.classList.remove('active');
+      if (state.auto_decay) {
+        const dspeed = parseFloat(state.decay_speed) || 1.0;
+        state.decay_time = Math.max(0.50, Math.min(0.9995, Math.pow(0.9700, (state.scanning_speed / 0.50) * dspeed)));
+      }
       updateUI(state);
       sendControls();
     });
@@ -982,6 +1035,9 @@
 
     decaySlider.addEventListener('input', () => {
       state.decay_time = parseFloat(decaySlider.value);
+      state.auto_decay = false;
+      autoDecayBtn?.classList.remove('active');
+      if (autoDecayStatus) autoDecayStatus.innerText = 'Manual Decay';
       updateUI(state);
       sendControls();
     });
@@ -1057,8 +1113,41 @@
     function setDecay(v) {
       decaySlider.value = v;
       state.decay_time = v;
+      state.auto_decay = false;
+      autoDecayBtn?.classList.remove('active');
+      if (autoDecayStatus) autoDecayStatus.innerText = 'Manual Decay';
       updateUI(state);
       sendControls();
+    }
+
+    function toggleAutoDecay() {
+      state.auto_decay = !state.auto_decay;
+      autoDecayBtn?.classList.toggle('active', state.auto_decay);
+      if (state.auto_decay) {
+        const speed = Math.max(0.05, parseFloat(state.scanning_speed) || 0.50);
+        const dspeed = parseFloat(state.decay_speed) || 1.0;
+        state.decay_time = Math.max(0.50, Math.min(0.9995, Math.pow(0.9700, (speed / 0.50) * dspeed)));
+      }
+      if (autoDecayStatus) autoDecayStatus.innerText = state.auto_decay ? 'Calibrated to Speed' : 'Manual Decay';
+      updateUI(state);
+      sendControls();
+    }
+
+    function setDecaySpeed(mult) {
+      state.decay_speed = parseFloat(mult);
+      if (state.auto_decay) {
+        const speed = Math.max(0.05, parseFloat(state.scanning_speed) || 0.50);
+        state.decay_time = Math.max(0.50, Math.min(0.9995, Math.pow(0.9700, (speed / 0.50) * state.decay_speed)));
+      } else {
+        state.decay_time = Math.max(0.50, Math.min(0.9995, Math.pow(0.9700, state.decay_speed)));
+      }
+      updateUI(state);
+      sendControls();
+    }
+
+    function multiplyDecaySpeed(factor) {
+      const cur = parseFloat(state.decay_speed) || 1.0;
+      setDecaySpeed(cur * factor);
     }
 
     function setScale(name) {
@@ -1301,6 +1390,10 @@
               state.freq_max = data.freq_max;
               freqMinSlider.value = data.freq_min;
               freqMaxSlider.value = data.freq_max;
+            }
+            if (data.auto_decay) {
+              state.decay_time = data.decay_time;
+              decaySlider.value = data.decay_time;
             }
             Object.assign(state, data);
             updateUI(state);

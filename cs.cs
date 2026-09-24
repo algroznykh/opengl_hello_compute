@@ -12,6 +12,7 @@ layout(rgba32f, binding = 3) uniform image2D backbuffer;
 layout (location = 0) uniform float time;                 /** Time */
 layout (location = 1) uniform int frame;                
 uniform float scan_speed;
+uniform float scan_delta;
 uniform float decay_time;
 uniform vec2 freq_range;
 uniform float freq_min_hz;
@@ -475,9 +476,22 @@ void main() {
     audioMagnitude = clamp(audioMagnitude * 200.0, 0.0, 1.0);
 
     vec3 color = vec3(audioMagnitude);
-    float angleDiff = abs(angle - fract(s));
-    angleDiff = min(angleDiff, 1.0 - angleDiff);
-    float intensity = (spectrogram_influence > 0.0001 && angleDiff < 0.012) ? 1.0 : 0.0;
+
+    // Continuous swept wedge: covers all angles swept during this frame interval
+    // Prevents strobe gaps and apparent frame drops at high scan speeds and high resolutions
+    float effDelta = (scan_delta > 0.00001) ? scan_delta : (effectiveSpeed * 0.016667);
+    effDelta = clamp(effDelta, 0.0, 0.5);
+    float beamW = 0.012;
+    float dAngle = fract(s - angle);
+    float distToSweep = 0.0;
+    if (dAngle > (1.0 - beamW)) {
+        distToSweep = 1.0 - dAngle;
+    } else if (dAngle <= effDelta) {
+        distToSweep = 0.0;
+    } else {
+        distToSweep = dAngle - effDelta;
+    }
+    float intensity = (spectrogram_influence > 0.0001 && distToSweep < beamW) ? (1.0 - distToSweep / beamW) : 0.0;
     vec3 spectrum = color * intensity * (2.0 * spectrogram_influence);
     vec3 activeAudioSignal = spectrum;
 

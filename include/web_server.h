@@ -24,6 +24,8 @@
 struct RadarConfig {
     std::atomic<float> scanningSpeed{0.4f};    // Scanning speed in rev/sec (matches default 1.0 / 2.5 = 0.4)
     std::atomic<float> decayTime{0.9700f};     // Decay persistence factor (default: Medium 0.9700)
+    std::atomic<bool> autoDecay{true};         // Auto decay calibration mode (calibrated w.r.t. scanning speed)
+    std::atomic<float> decaySpeedScale{1.0f};  // Decay speed multiplier (1x, 2x, 4x, etc.)
     std::atomic<float> freqMinHz{60.0f};       // Min frequency in Hz (default 60 Hz)
     std::atomic<float> freqMaxHz{4000.0f};     // Max frequency in Hz (default 4000 Hz)
     std::atomic<float> freqRangeMin{0.0f};     // Shader radial freq start (0.0 to 1.0)
@@ -155,6 +157,8 @@ struct RadarConfig {
         ss << "{\n";
         ss << "  \"scanning_speed\": " << scanningSpeed.load() << ",\n";
         ss << "  \"decay_time\": " << decayTime.load() << ",\n";
+        ss << "  \"auto_decay\": " << (autoDecay.load() ? "true" : "false") << ",\n";
+        ss << "  \"decay_speed\": " << decaySpeedScale.load() << ",\n";
         ss << "  \"freq_min\": " << freqMinHz.load() << ",\n";
         ss << "  \"freq_max\": " << freqMaxHz.load() << ",\n";
         ss << "  \"freq_range_low\": " << freqRangeMin.load() << ",\n";
@@ -645,31 +649,71 @@ private:
                 std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
                 int chVal;
                 std::string chStr;
+                bool hasExplicitChannel = false;
                 if (extractJsonInt(body, "channel", chVal) || extractJsonInt(body, "nca_channel_view", chVal)) {
                     if (chVal >= -1 && chVal <= 13) {
                         m_config.ncaChannelView.store(chVal);
+                        hasExplicitChannel = true;
                     }
                 } else if (extractJsonString(body, "channel", chStr) || extractJsonString(body, "mode", chStr)) {
                     if (chStr == "pca" || chStr == "pca_rgb" || chStr == "pca3") {
                         m_config.ncaChannelView.store(13);
+                        hasExplicitChannel = true;
                     } else if (chStr == "composite" || chStr == "default") {
                         m_config.ncaChannelView.store(-1);
+                        hasExplicitChannel = true;
                     } else if (chStr == "custom" || chStr == "3ch" || chStr == "rgb" || chStr == "raw_rgb") {
                         m_config.ncaChannelView.store(12);
+                        hasExplicitChannel = true;
                     }
                 }
                 int r, g, b;
+                bool customChannelsSent = false;
                 if (extractJsonInt(body, "custom_r", r) || extractJsonInt(body, "r", r) || extractJsonInt(body, "custom_channel_r", r)) {
                     m_config.customChannelR.store(std::max(0, std::min(11, r)));
-                    m_config.ncaChannelView.store(12);
+                    customChannelsSent = true;
                 }
                 if (extractJsonInt(body, "custom_g", g) || extractJsonInt(body, "g", g) || extractJsonInt(body, "custom_channel_g", g)) {
                     m_config.customChannelG.store(std::max(0, std::min(11, g)));
-                    m_config.ncaChannelView.store(12);
+                    customChannelsSent = true;
                 }
                 if (extractJsonInt(body, "custom_b", b) || extractJsonInt(body, "b", b) || extractJsonInt(body, "custom_channel_b", b)) {
                     m_config.customChannelB.store(std::max(0, std::min(11, b)));
+                    customChannelsSent = true;
+                }
+                if (!hasExplicitChannel && customChannelsSent) {
                     m_config.ncaChannelView.store(12);
+                }
+            }
+            std::string resBody = m_config.toJson();
+            std::ostringstream response;
+            response << "HTTP/1.1 200 OK\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << resBody.length() << "\r\n"
+                     << cors
+                     << "Connection: close\r\n\r\n"
+                     << resBody;
+            std::string resStr = response.str();
+            send(clientFd, resStr.c_str(), resStr.length(), 0);
+            return;
+        }
+
+        // Decay persistence & speed calibration endpoint
+        if (cleanPath == "/api/decay") {
+            if (method == "POST") {
+                size_t bodyPos = request.find("\r\n\r\n");
+                std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
+                bool boolVal;
+                if (extractJsonBool(body, "auto_decay", boolVal) || extractJsonBool(body, "auto", boolVal)) {
+                    m_config.autoDecay.store(boolVal);
+                }
+                float val;
+                if (extractJsonFloat(body, "decay_speed", val) || extractJsonFloat(body, "speed", val) || extractJsonFloat(body, "decay_scale", val) || extractJsonFloat(body, "multiplier", val)) {
+                    m_config.decaySpeedScale.store(std::max(0.1f, std::min(10.0f, val)));
+                }
+                if (extractJsonFloat(body, "decay_time", val) || extractJsonFloat(body, "decay", val)) {
+                    m_config.decayTime.store(std::max(0.1f, std::min(0.9999f, val)));
+                    m_config.autoDecay.store(false);
                 }
             }
             std::string resBody = m_config.toJson();
@@ -762,6 +806,16 @@ private:
                 if (val >= 0.01f && val <= 10.0f) {
                     m_config.scanningSpeed.store(val);
                 }
+            }
+            if (extractJsonBool(body, "auto_decay", boolVal)) {
+                m_config.autoDecay.store(boolVal);
+            }
+            if (extractJsonFloat(body, "decay_speed", val) || extractJsonFloat(body, "decay_speed_scale", val) || extractJsonFloat(body, "decay_scale", val) || extractJsonFloat(body, "decay_speed_mult", val)) {
+                m_config.decaySpeedScale.store(std::max(0.1f, std::min(10.0f, val)));
+            }
+            if (extractJsonFloat(body, "decay_multiply", val) && val > 0.01f) {
+                float curScale = m_config.decaySpeedScale.load();
+                m_config.decaySpeedScale.store(std::max(0.1f, std::min(10.0f, curScale * val)));
             }
             if (extractJsonFloat(body, "decay_time", val)) {
                 if (val >= 0.1f && val <= 0.9999f) {
@@ -938,33 +992,43 @@ private:
             if (extractJsonString(body, "imprint_message", strVal)) {
                 m_config.requestImprint(strVal);
             }
+            bool hasExplicitChannelView = false;
             if (extractJsonInt(body, "nca_channel_view", intVal) || extractJsonInt(body, "channel", intVal)) {
                 if (intVal >= -1 && intVal <= 13) {
                     m_config.ncaChannelView.store(intVal);
+                    hasExplicitChannelView = true;
                 }
             }
             int chVal;
+            bool customChannelsSent = false;
             if (extractJsonInt(body, "custom_channel_r", chVal) || extractJsonInt(body, "custom_r", chVal) || extractJsonInt(body, "r", chVal)) {
                 m_config.customChannelR.store(std::max(0, std::min(11, chVal)));
-                m_config.ncaChannelView.store(12);
+                customChannelsSent = true;
             }
             if (extractJsonInt(body, "custom_channel_g", chVal) || extractJsonInt(body, "custom_g", chVal) || extractJsonInt(body, "g", chVal)) {
                 m_config.customChannelG.store(std::max(0, std::min(11, chVal)));
-                m_config.ncaChannelView.store(12);
+                customChannelsSent = true;
             }
             if (extractJsonInt(body, "custom_channel_b", chVal) || extractJsonInt(body, "custom_b", chVal) || extractJsonInt(body, "b", chVal)) {
                 m_config.customChannelB.store(std::max(0, std::min(11, chVal)));
+                customChannelsSent = true;
+            }
+            if (!hasExplicitChannelView && customChannelsSent) {
                 m_config.ncaChannelView.store(12);
             }
             if (extractJsonBool(body, "pca_reroll", boolVal) && boolVal) {
                 m_config.pcaRerollRequested.store(true);
             }
             if (extractJsonFloat(body, "pca_hue_shift", val) || extractJsonFloat(body, "pca_shift", val)) {
-                m_config.pcaPendingHueShift.store(val);
-                m_config.pcaHueShift.store(val);
+                if (std::abs(val - m_config.pcaHueShift.load()) > 0.001f) {
+                    m_config.pcaPendingHueShift.store(val);
+                    m_config.pcaHueShift.store(val);
+                }
             }
             if (extractJsonFloat(body, "pca_hue_delta", val)) {
-                m_config.pcaPendingHueDelta.store(val);
+                if (std::abs(val) > 0.001f) {
+                    m_config.pcaPendingHueDelta.store(val);
+                }
             }
 
             std::string resBody = m_config.toJson();
@@ -1401,17 +1465,44 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     </div>
 
     <!-- Decay Time -->
+    <!-- Decay Persistence & Speed Control -->
     <div class="section">
       <div class="section-head">
-        <span class="section-title">Decay Persistence</span>
+        <span class="section-title">Decay Persistence & Speed</span>
         <span id="decayVal" class="val">0.9700</span>
       </div>
-      <input type="range" id="decaySlider" min="0.8000" max="0.9995" step="0.0005" value="0.9700">
+
+      <!-- Decay Speed Controls: 2x / 4x Buttons -->
+      <div style="display:flex; flex-direction:column; gap:3px;">
+        <div class="meta-row">
+          <span>Decay Speed:</span>
+          <span id="decaySpeedVal" class="val" style="color:var(--accent-cyan); font-weight:700;">1.00x</span>
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="decaySpeedBtn05" onclick="setDecaySpeed(0.5)" title="0.5x Slower Decay (Longer persistence)">0.5x</button>
+          <button class="btn active" id="decaySpeedBtn1" onclick="setDecaySpeed(1.0)" title="1x Normal Decay Speed">1x</button>
+          <button class="btn" id="decaySpeedBtn2" onclick="setDecaySpeed(2.0)" title="2x Faster Decay Speed">2x</button>
+          <button class="btn" id="decaySpeedBtn4" onclick="setDecaySpeed(4.0)" title="4x Faster Decay Speed">4x</button>
+        </div>
+      </div>
+
+      <div class="meta-row" style="margin-top:4px;">
+        <span>Radar Trail Persistence:</span>
+        <span id="decayLabel" class="val" style="color:var(--accent); font-weight:700;">Medium (0.9700)</span>
+      </div>
       <div class="btn-row">
         <button class="btn" id="decayFastBtn" onclick="setDecay(0.9200)">Fast</button>
         <button class="btn active" id="decayMedBtn" onclick="setDecay(0.9700)">Medium</button>
         <button class="btn" id="decayDefBtn" onclick="setDecay(0.9950)">Default</button>
         <button class="btn" id="decayLongBtn" onclick="setDecay(0.9990)">Long Glow</button>
+      </div>
+      <input type="range" id="decaySlider" min="0.8000" max="0.9995" step="0.0005" value="0.9700">
+
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
+        <button id="autoDecayBtn" class="toggle-btn active" onclick="toggleAutoDecay()" title="Automatically calibrate decay persistence to scanning speed so perturbation decays consistently w.r.t. radar rotation">
+          ⚡ Auto Decay Calibrate
+        </button>
+        <span id="autoDecayStatus" class="meta-row" style="margin:0; font-size:0.75rem;">Sync to Sweep</span>
       </div>
     </div>
 
@@ -1592,7 +1683,9 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       custom_channel_g: 1,
       custom_channel_b: 2,
       pca_hue_shift: 0.0,
-      spectrogram_scale: 1.0
+      spectrogram_scale: 1.0,
+      auto_decay: true,
+      decay_speed: 1.0
     };
 
     const connDot = document.getElementById('connDot');
@@ -1611,6 +1704,9 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     const specInfluenceVal = document.getElementById('specInfluenceVal');
     const specScaleVal = document.getElementById('specScaleVal');
     const decayVal = document.getElementById('decayVal');
+    const decaySpeedVal = document.getElementById('decaySpeedVal');
+    const autoDecayBtn = document.getElementById('autoDecayBtn');
+    const autoDecayStatus = document.getElementById('autoDecayStatus');
     const freqRangeVal = document.getElementById('freqRangeVal');
     const minFreqVal = document.getElementById('minFreqVal');
     const maxFreqVal = document.getElementById('maxFreqVal');
@@ -1641,7 +1737,8 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         }
       }
       if (s.decay_time !== undefined) {
-        const dt = Number(s.decay_time);
+        state.decay_time = Number(s.decay_time);
+        const dt = state.decay_time;
         decayVal.innerText = dt.toFixed(4);
         if (decaySlider && !decaySlider.matches(':active')) {
           decaySlider.value = dt;
@@ -1650,6 +1747,20 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         document.getElementById('decayMedBtn')?.classList.toggle('active', Math.abs(dt - 0.9700) < 0.005);
         document.getElementById('decayDefBtn')?.classList.toggle('active', Math.abs(dt - 0.9950) < 0.002);
         document.getElementById('decayLongBtn')?.classList.toggle('active', Math.abs(dt - 0.9990) < 0.002);
+      }
+      if (s.decay_speed !== undefined) {
+        state.decay_speed = parseFloat(s.decay_speed);
+        const ds = state.decay_speed;
+        if (decaySpeedVal) decaySpeedVal.innerText = ds.toFixed(2) + 'x';
+        document.getElementById('decaySpeedBtn05')?.classList.toggle('active', Math.abs(ds - 0.5) < 0.05);
+        document.getElementById('decaySpeedBtn1')?.classList.toggle('active', Math.abs(ds - 1.0) < 0.05);
+        document.getElementById('decaySpeedBtn2')?.classList.toggle('active', Math.abs(ds - 2.0) < 0.05);
+        document.getElementById('decaySpeedBtn4')?.classList.toggle('active', Math.abs(ds - 4.0) < 0.05);
+      }
+      if (s.auto_decay !== undefined) {
+        state.auto_decay = !!s.auto_decay;
+        autoDecayBtn?.classList.toggle('active', state.auto_decay);
+        if (autoDecayStatus) autoDecayStatus.innerText = state.auto_decay ? 'Calibrated to Speed' : 'Manual Decay';
       }
       if (s.freq_min !== undefined) minFreqVal.innerText = Math.round(s.freq_min) + ' Hz';
       if (s.freq_max !== undefined) maxFreqVal.innerText = Math.round(s.freq_max) + ' Hz';
@@ -1884,6 +1995,8 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         const payload = {
           scanning_speed: parseFloat(state.scanning_speed),
           decay_time: parseFloat(state.decay_time),
+          auto_decay: !!state.auto_decay,
+          decay_speed: parseFloat(state.decay_speed !== undefined ? state.decay_speed : 1.0),
           spectrogram_influence: parseFloat(state.spectrogram_influence !== undefined ? state.spectrogram_influence : 1.0),
           spectrogram_scale: parseFloat(state.spectrogram_scale !== undefined ? state.spectrogram_scale : 1.0),
           freq_min: parseFloat(state.freq_min),
@@ -1951,6 +2064,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       state.scanning_speed = parseFloat(speedSlider.value);
       state.auto_speed = false;
       autoSpeedBtn.classList.remove('active');
+      if (state.auto_decay) {
+        const dspeed = parseFloat(state.decay_speed) || 1.0;
+        state.decay_time = Math.max(0.50, Math.min(0.9995, Math.pow(0.9700, (state.scanning_speed / 0.50) * dspeed)));
+      }
       updateUI(state);
       sendControls();
     });
@@ -1971,6 +2088,9 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 
     decaySlider.addEventListener('input', () => {
       state.decay_time = parseFloat(decaySlider.value);
+      state.auto_decay = false;
+      autoDecayBtn?.classList.remove('active');
+      if (autoDecayStatus) autoDecayStatus.innerText = 'Manual Decay';
       updateUI(state);
       sendControls();
     });
@@ -2046,8 +2166,41 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     function setDecay(v) {
       decaySlider.value = v;
       state.decay_time = v;
+      state.auto_decay = false;
+      autoDecayBtn?.classList.remove('active');
+      if (autoDecayStatus) autoDecayStatus.innerText = 'Manual Decay';
       updateUI(state);
       sendControls();
+    }
+
+    function toggleAutoDecay() {
+      state.auto_decay = !state.auto_decay;
+      autoDecayBtn?.classList.toggle('active', state.auto_decay);
+      if (state.auto_decay) {
+        const speed = Math.max(0.05, parseFloat(state.scanning_speed) || 0.50);
+        const dspeed = parseFloat(state.decay_speed) || 1.0;
+        state.decay_time = Math.max(0.50, Math.min(0.9995, Math.pow(0.9700, (speed / 0.50) * dspeed)));
+      }
+      if (autoDecayStatus) autoDecayStatus.innerText = state.auto_decay ? 'Calibrated to Speed' : 'Manual Decay';
+      updateUI(state);
+      sendControls();
+    }
+
+    function setDecaySpeed(mult) {
+      state.decay_speed = parseFloat(mult);
+      if (state.auto_decay) {
+        const speed = Math.max(0.05, parseFloat(state.scanning_speed) || 0.50);
+        state.decay_time = Math.max(0.50, Math.min(0.9995, Math.pow(0.9700, (speed / 0.50) * state.decay_speed)));
+      } else {
+        state.decay_time = Math.max(0.50, Math.min(0.9995, Math.pow(0.9700, state.decay_speed)));
+      }
+      updateUI(state);
+      sendControls();
+    }
+
+    function multiplyDecaySpeed(factor) {
+      const cur = parseFloat(state.decay_speed) || 1.0;
+      setDecaySpeed(cur * factor);
     }
 
     function setScale(name) {
@@ -2290,6 +2443,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
               state.freq_max = data.freq_max;
               freqMinSlider.value = data.freq_min;
               freqMaxSlider.value = data.freq_max;
+            }
+            if (data.auto_decay) {
+              state.decay_time = data.decay_time;
+              decaySlider.value = data.decay_time;
             }
             Object.assign(state, data);
             updateUI(state);

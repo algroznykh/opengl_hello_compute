@@ -82,7 +82,12 @@ def main():
     assert "shiftPcaPalette" in html, "HTML should contain shift PCA palette function"
     assert "pcaHueSlider" in html, "HTML should contain PCA hue slider"
     assert "decayMedBtn" in html, "HTML should contain decay persistence Medium button"
-    print("  -> Passed. UI elements verified: 3 Channels (RGB), PCA Palette, Decay persistence, and clean removals.")
+    assert "decaySpeedBtn2" in html, "HTML should contain 2x decay speed button"
+    assert "decaySpeedBtn4" in html, "HTML should contain 4x decay speed button"
+    assert "autoDecayBtn" in html, "HTML should contain auto decay calibrate button"
+    assert "setDecaySpeed" in html, "HTML should contain setDecaySpeed function"
+    assert "toggleAutoDecay" in html, "HTML should contain toggleAutoDecay function"
+    print("  -> Passed. UI elements verified: 3 Channels (RGB), PCA Palette, Decay persistence & 2x/4x speed, and clean removals.")
 
     # Other core features remain intact
     assert "setTopology" in html, "HTML should contain setTopology"
@@ -127,6 +132,10 @@ def main():
     assert abs(status["nca_topology"] - 1.0) < 0.05, "Default nca_topology must be Polar (1.0)"
     assert status["reverse_pole"] is True, "Default reverse_pole must be True (inward)"
     assert abs(status["decay_time"] - 0.9700) < 0.005, f"Default decay_time must be Medium (0.9700), got {status.get('decay_time')}"
+    assert "auto_decay" in status, "Status must contain auto_decay"
+    assert "decay_speed" in status, "Status must contain decay_speed"
+    assert status["auto_decay"] is True, "Default auto_decay must be True"
+    assert abs(status["decay_speed"] - 1.0) < 0.05, f"Default decay_speed must be 1.0, got {status.get('decay_speed')}"
     assert status["sim_width"] == 800 and status["sim_height"] == 600, f"Default resolution must be 800x600, got {status.get('sim_width')}x{status.get('sim_height')}"
 
     # Verify simulation resolution fields
@@ -312,9 +321,86 @@ def main():
     assert abs(res["pca_hue_shift"] - 120.0) < 1.0
     print(f"  -> PCA Palette controls verified (reroll, shift, absolute hue: {res['pca_hue_shift']}°).")
 
+    print("[13] Testing Palette Stability against unrelated element controls...")
+    # Set to PCA RGB mode (channel 13)
+    res = post_json("/api/channel", {"channel": 13})
+    assert res["nca_channel_view"] == 13, f"Expected channel view 13, got {res.get('nca_channel_view')}"
+
+    # Simulate what webUI sendControls() does when ANY unrelated slider/button is adjusted:
+    # It sends custom_channel_r, custom_channel_g, custom_channel_b along with nca_channel_view: 13
+    res = post_json("/api/controls", {
+        "scanning_speed": 1.25,
+        "nca_channel_view": 13,
+        "custom_channel_r": 0,
+        "custom_channel_g": 1,
+        "custom_channel_b": 2
+    })
+    assert res["nca_channel_view"] == 13, f"Palette bug detected: nca_channel_view changed to {res.get('nca_channel_view')} instead of remaining 13!"
+
+    # Also test Composite CC mode (channel -1)
+    res = post_json("/api/channel", {"channel": -1})
+    assert res["nca_channel_view"] == -1
+    res = post_json("/api/controls", {
+        "decay_time": 0.95,
+        "nca_channel_view": -1,
+        "custom_channel_r": 0,
+        "custom_channel_g": 1,
+        "custom_channel_b": 2
+    })
+    assert res["nca_channel_view"] == -1, f"Palette bug detected: nca_channel_view changed to {res.get('nca_channel_view')} instead of remaining -1!"
+    print("  -> Palette stability verified: unrelated element controls do NOT spontaneously change color palette.")
+
+    print("[14] Testing Auto Decay Calibration & 2x/4x Decay Speed Controls...")
+    # Test auto decay calibration w.r.t. scanning speed
+    # Baseline: scanning_speed = 0.50, decay_speed = 1.0 -> decay_time ≈ 0.9700
+    res = post_json("/api/controls", {
+        "auto_decay": True,
+        "decay_speed": 1.0,
+        "scanning_speed": 0.50,
+        "auto_speed": False
+    })
+    assert res.get("auto_decay") is True
+    assert abs(res["decay_speed"] - 1.0) < 0.05
+    time.sleep(0.05)
+    status_str, _ = get("/api/status")
+    st = json.loads(status_str)
+    assert abs(st["decay_time"] - 0.9700) < 0.015, f"At speed 0.50, expected decay ~0.9700, got {st.get('decay_time')}"
+
+    # As scanning speed increases, decay rate should calibrate faster (smaller decay_time factor)
+    res = post_json("/api/controls", {
+        "scanning_speed": 1.00,
+        "auto_speed": False
+    })
+    time.sleep(0.05)
+    status_str, _ = get("/api/status")
+    st = json.loads(status_str)
+    # At speed 1.00 (2x scanning speed), decay_time should be ≈ 0.9700^2 = 0.9409
+    assert abs(st["decay_time"] - 0.9409) < 0.02, f"At speed 1.00, expected decay ~0.9409, got {st.get('decay_time')}"
+
+    # At speed 2.00 (4x scanning speed), decay_time should be ≈ 0.9700^4 = 0.8853
+    res = post_json("/api/controls", {
+        "scanning_speed": 2.00,
+        "auto_speed": False
+    })
+    time.sleep(0.05)
+    status_str, _ = get("/api/status")
+    st = json.loads(status_str)
+    assert abs(st["decay_time"] - 0.8853) < 0.025, f"At speed 2.00, expected decay ~0.8853, got {st.get('decay_time')}"
+
+    # Test 2x / 4x decay speed buttons via /api/decay and /api/controls
+    res = post_json("/api/decay", {"decay_speed": 2.0})
+    assert abs(res["decay_speed"] - 2.0) < 0.05
+    res = post_json("/api/decay", {"decay_speed": 4.0})
+    assert abs(res["decay_speed"] - 4.0) < 0.05
+    res = post_json("/api/controls", {"decay_speed": 1.0})
+    assert abs(res["decay_speed"] - 1.0) < 0.05
+    print("  -> Auto decay calibration w.r.t. scanning speed and 2x/4x decay speed controls verified.")
+
     # Reset to defaults
     post_json("/api/controls", {
         "auto_speed": True,
+        "auto_decay": True,
+        "decay_speed": 1.0,
         "spectrogram_influence": 1.0,
         "nca_topology": 1.0,
         "reverse_pole": True,
