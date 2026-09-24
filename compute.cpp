@@ -110,11 +110,11 @@ void initializeBaselineGenome() {
     }
 }
 
-// Simulation resolution configuration (semi-independent from screen resolution)
-int g_simWidth = 267;
-int g_simHeight = 200;
-int g_simScaleMode = 0; // 0 = Relative, 1 = Fixed
-float g_simScale = 0.333333f;
+// Simulation resolution configuration (semi-independent from screen resolution) - Default 800x600
+int g_simWidth = 800;
+int g_simHeight = 600;
+int g_simScaleMode = 0; // 0 = Relative (1:1), 1 = Fixed
+float g_simScale = 1.0f;
 const int MAX_SIM_WIDTH = 1920;
 const int MAX_SIM_HEIGHT = 1080;
 
@@ -514,6 +514,112 @@ struct NcaStateAnalyzer {
 
 static NcaStateAnalyzer g_stateAnalyzer;
 
+// --- PCA Palette Management (3x3 Orthonormal Matrix & Hue Rotation) ---
+std::mutex g_pcaPaletteMutex;
+float g_pcaBaseMatrix[9] = {
+    1.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 1.0f
+};
+float g_pcaPaletteMatrix[9] = {
+    1.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 1.0f
+};
+float g_pcaHueShift = 0.0f; // degrees
+
+void updatePcaPaletteMatrix() {
+    float rad = g_pcaHueShift * (float)M_PI / 180.0f;
+    float c = std::cos(rad);
+    float s = std::sin(rad);
+    float t = 1.0f - c;
+    float k = 1.0f / std::sqrt(3.0f);
+
+    float R[3][3];
+    R[0][0] = c + t / 3.0f;
+    R[0][1] = t / 3.0f - s * k;
+    R[0][2] = t / 3.0f + s * k;
+
+    R[1][0] = t / 3.0f + s * k;
+    R[1][1] = c + t / 3.0f;
+    R[1][2] = t / 3.0f - s * k;
+
+    R[2][0] = t / 3.0f - s * k;
+    R[2][1] = t / 3.0f + s * k;
+    R[2][2] = c + t / 3.0f;
+
+    for (int col = 0; col < 3; col++) {
+        for (int row = 0; row < 3; row++) {
+            g_pcaPaletteMatrix[col * 3 + row] = 
+                R[row][0] * g_pcaBaseMatrix[col * 3 + 0] +
+                R[row][1] * g_pcaBaseMatrix[col * 3 + 1] +
+                R[row][2] * g_pcaBaseMatrix[col * 3 + 2];
+        }
+    }
+}
+
+void rerollPcaPalette() {
+    std::lock_guard<std::mutex> lock(g_pcaPaletteMutex);
+    static std::mt19937 rng(1337 + (unsigned int)std::time(nullptr));
+    std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * (float)M_PI);
+    std::uniform_real_distribution<float> zDist(-1.0f, 1.0f);
+    std::uniform_int_distribution<int> signDist(0, 1);
+
+    float z = zDist(rng);
+    float r = std::sqrt(std::max(0.0f, 1.0f - z * z));
+    float phi = angleDist(rng);
+    float ux = r * std::cos(phi);
+    float uy = r * std::sin(phi);
+    float uz = z;
+    float psi = angleDist(rng);
+
+    float c = std::cos(psi);
+    float s = std::sin(psi);
+    float t = 1.0f - c;
+
+    float B[3][3];
+    B[0][0] = c + ux * ux * t;
+    B[0][1] = ux * uy * t - uz * s;
+    B[0][2] = ux * uz * t + uy * s;
+
+    B[1][0] = uy * ux * t + uz * s;
+    B[1][1] = c + uy * uy * t;
+    B[1][2] = uy * uz * t - ux * s;
+
+    B[2][0] = uz * ux * t - uy * s;
+    B[2][1] = uz * uy * t + ux * s;
+    B[2][2] = c + uz * uz * t;
+
+    float sx = signDist(rng) ? 1.0f : -1.0f;
+    float sy = signDist(rng) ? 1.0f : -1.0f;
+    float sz = signDist(rng) ? 1.0f : -1.0f;
+
+    for (int row = 0; row < 3; row++) {
+        g_pcaBaseMatrix[0 * 3 + row] = B[row][0] * sx;
+        g_pcaBaseMatrix[1 * 3 + row] = B[row][1] * sy;
+        g_pcaBaseMatrix[2 * 3 + row] = B[row][2] * sz;
+    }
+
+    updatePcaPaletteMatrix();
+    std::cout << "[PCA] Palette re-rolled successfully." << std::endl;
+}
+
+void setPcaHueShift(float degrees) {
+    std::lock_guard<std::mutex> lock(g_pcaPaletteMutex);
+    g_pcaHueShift = std::fmod(degrees, 360.0f);
+    if (g_pcaHueShift < 0.0f) g_pcaHueShift += 360.0f;
+    g_radarConfig.pcaHueShift.store(g_pcaHueShift);
+    updatePcaPaletteMatrix();
+}
+
+void shiftPcaPalette(float deltaDegrees) {
+    std::lock_guard<std::mutex> lock(g_pcaPaletteMutex);
+    g_pcaHueShift = std::fmod(g_pcaHueShift + deltaDegrees, 360.0f);
+    if (g_pcaHueShift < 0.0f) g_pcaHueShift += 360.0f;
+    g_radarConfig.pcaHueShift.store(g_pcaHueShift);
+    updatePcaPaletteMatrix();
+}
+
 void imprintTextMessage(const std::string& msg) {
     if (msg.empty() || TEXTURE_WIDTH == 0 || TEXTURE_HEIGHT == 0) return;
 
@@ -808,26 +914,19 @@ float lastFrame = 0.0f;
 const float FPS_CAP = 60.0f;
 const float FRAME_TIME = 1.0f / FPS_CAP;
 
-// Audio constants - Fixed buffer size mismatch
+// Audio constants - High resolution FFT & Musical Bins
 const int SAMPLE_RATE = 44100;
-const int BUFFER_SIZE = 1024;  // Increased for better frequency resolution
-const int FFT_SIZE = BUFFER_SIZE ;     // Must match BUFFER_SIZE for proper processing
-
-// Musical scale frequency mapping
-const float MIN_AUDIBLE_FREQ = 100.0f;    // 20 Hz (close to lowest piano note)
-const float MAX_AUDIBLE_FREQ = 10000.0f; // 20 kHz
-const float FREQ_PER_BIN = (float)SAMPLE_RATE / FFT_SIZE; // ~43 Hz per bin
-const int MIN_BIN = (int)(MIN_AUDIBLE_FREQ / FREQ_PER_BIN);
-const int MAX_BIN = (int)(MAX_AUDIBLE_FREQ / FREQ_PER_BIN);
-const int MUSICAL_BINS = 88 * 4; // Fixed number of bins for musical scale
+const int BUFFER_SIZE = 2048;  // 2048 samples for high frequency resolution (~21.5 Hz per bin)
+const int FFT_SIZE = BUFFER_SIZE;
+const float FREQ_PER_BIN = (float)SAMPLE_RATE / FFT_SIZE; // ~21.53 Hz per bin
+const int MUSICAL_BINS = 512;  // High-density bins for smooth continuous spectrum
 
 // Audio data
 std::vector<float> audioBuffer(BUFFER_SIZE);
 std::vector<float> fftMagnitudes(MUSICAL_BINS); // Musical scale distributed frequencies
 std::vector<float> rawFFTMagnitudes(FFT_SIZE/2); // Raw FFT data for interpolation
-std::vector<float> waveformSamples(MUSICAL_BINS); // Time-domain waveform samples for center-originating visualizer
 std::mutex audioMutex;
-bool audioRunning = true;  // Changed to true for continuous operation
+bool audioRunning = true;
 
 // Audio and camera textures (declared globally above)
 
@@ -1020,8 +1119,7 @@ void audioProcessingLoop() {
         } else {
             rhythmConfidence = std::max(0.0f, rhythmConfidence - 0.03f);
         }
-        bool rhythmEstablished = (rhythmConfidence > 0.5f);
-        g_radarConfig.rhythmEstablished.store(rhythmEstablished);
+
 
         if (g_radarConfig.autoSpeed.load()) {
             int div = g_radarConfig.rhythmDivision.load();
@@ -1041,12 +1139,12 @@ void audioProcessingLoop() {
         // --- Frequency Range & Scaling Autotuning ---
         float autoGainMultiplier = 1.0f;
         if (g_radarConfig.autoFreq.load()) {
-            if (totalEnergy > 0.005f) {
+            if (totalEnergy > 0.003f) {
                 float cumEnergy = 0.0f;
                 int lowBin = 1;
                 int highBin = FFT_SIZE / 2 - 1;
-                float lowThresh = totalEnergy * 0.03f;
-                float highThresh = totalEnergy * 0.92f;
+                float lowThresh = totalEnergy * 0.02f;
+                float highThresh = totalEnergy * 0.96f;
 
                 for (int i = 1; i < FFT_SIZE / 2; i++) {
                     cumEnergy += rawFFTMagnitudes[i];
@@ -1057,16 +1155,22 @@ void audioProcessingLoop() {
                     }
                 }
 
-                float detectedMin = std::max(20.0f, lowBin * FREQ_PER_BIN);
-                float detectedMax = std::min(18000.0f, highBin * FREQ_PER_BIN);
-                if (detectedMax < detectedMin + 300.0f) {
-                    detectedMax = detectedMin + 300.0f;
+                // Detect acoustic energy boundaries relative to peak magnitude
+                float noiseFloor = peakMag * 0.025f;
+                while (lowBin < highBin && rawFFTMagnitudes[lowBin] < noiseFloor && cumEnergy < totalEnergy * 0.04f) {
+                    lowBin++;
+                }
+                while (highBin > lowBin && rawFFTMagnitudes[highBin] < noiseFloor && highBin > 20) {
+                    highBin--;
                 }
 
-                static float smoothedMinFreq = 100.0f;
-                static float smoothedMaxFreq = 10000.0f;
-                smoothedMinFreq = 0.98f * smoothedMinFreq + 0.02f * detectedMin;
-                smoothedMaxFreq = 0.98f * smoothedMaxFreq + 0.02f * detectedMax;
+                float detectedMin = std::max(30.0f, std::min(300.0f, lowBin * FREQ_PER_BIN));
+                float detectedMax = std::min(14000.0f, std::max(detectedMin * 3.5f, highBin * FREQ_PER_BIN));
+
+                static float smoothedMinFreq = 60.0f;
+                static float smoothedMaxFreq = 4000.0f;
+                smoothedMinFreq = 0.90f * smoothedMinFreq + 0.10f * detectedMin;
+                smoothedMaxFreq = 0.90f * smoothedMaxFreq + 0.10f * detectedMax;
                 g_radarConfig.freqMinHz.store(smoothedMinFreq);
                 g_radarConfig.freqMaxHz.store(smoothedMaxFreq);
             }
@@ -1125,15 +1229,6 @@ void audioProcessingLoop() {
             } else {
                 fftMagnitudes[i] = 0.0f;
             }
-        }
-
-        // Resample time-domain audioBuffer (1024) to waveformSamples (352)
-        for (int i = 0; i < MUSICAL_BINS; i++) {
-            float srcIdx = (float)i * (BUFFER_SIZE - 1) / (MUSICAL_BINS - 1);
-            int i0 = (int)srcIdx;
-            int i1 = std::min(i0 + 1, BUFFER_SIZE - 1);
-            float frac = srcIdx - i0;
-            waveformSamples[i] = audioBuffer[i0] * (1.0f - frac) + audioBuffer[i1] * frac;
         }
     }
 }
@@ -1331,7 +1426,7 @@ int main(int argc, char* argv[]) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, MUSICAL_BINS, 2, 0, GL_RED, GL_FLOAT, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, MUSICAL_BINS, 1, 0, GL_RED, GL_FLOAT, NULL);
     glBindImageTexture(1, audioTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32F);
 
     // Create camera texture
@@ -1525,14 +1620,18 @@ int main(int argc, char* argv[]) {
             while (radarPhase >= 1.0f) radarPhase -= 1.0f;
             while (radarPhase < 0.0f) radarPhase += 1.0f;
 
-            // Compute waveform mix based on waveform mode and rhythm established state
-            bool isWaveActive = g_radarConfig.isWaveformActive();
-            g_radarConfig.waveformActive.store(isWaveActive);
-
-            float targetMix = isWaveActive ? 1.0f : 0.0f;
-            static float currentWaveformMix = 1.0f;
-            float blendStep = std::min(1.0f, 6.0f * deltaTime);
-            currentWaveformMix += (targetMix - currentWaveformMix) * blendStep;
+            // Check for pending PCA palette re-roll / hue shift
+            if (g_radarConfig.pcaRerollRequested.exchange(false)) {
+                rerollPcaPalette();
+            }
+            float pendingHue = g_radarConfig.pcaPendingHueShift.exchange(-999.0f);
+            if (pendingHue >= -360.0f) {
+                setPcaHueShift(pendingHue);
+            }
+            float pendingDelta = g_radarConfig.pcaPendingHueDelta.exchange(0.0f);
+            if (std::abs(pendingDelta) > 0.001f) {
+                shiftPcaPalette(pendingDelta);
+            }
 
             // Handle pending Easter egg message imprints
             std::string pendingMsg;
@@ -1570,22 +1669,6 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            // Channel auto-cycling logic
-            static float channelCycleTimer = 0.0f;
-            if (g_radarConfig.ncaAutoCycleChannels.load()) {
-                float cycleInterval = std::max(0.1f, g_radarConfig.ncaCycleInterval.load());
-                channelCycleTimer += deltaTime;
-                if (channelCycleTimer >= cycleInterval) {
-                    channelCycleTimer = 0.0f;
-                    int curChan = g_radarConfig.ncaChannelView.load();
-                    // Cycle through NCA channels 0 to 11
-                    int nextChan = (curChan < 0 || curChan >= 11) ? 0 : curChan + 1;
-                    g_radarConfig.ncaChannelView.store(nextChan);
-                }
-            } else {
-                channelCycleTimer = 0.0f;
-            }
-
             // Update dim factor for CA simulation state (smooth damping after reset)
             if (rerollDimTimer > 0.0f) {
                 rerollDimTimer -= deltaTime;
@@ -1609,6 +1692,14 @@ int main(int argc, char* argv[]) {
             currentComputeShader->setInt("scale_type", g_radarConfig.scaleType.load());
             currentComputeShader->setFloat("spectrogram_influence", g_radarConfig.spectrogramInfluence.load());
             currentComputeShader->setInt("nca_channel_view", g_radarConfig.ncaChannelView.load());
+            currentComputeShader->setIVec3("custom_channels", 
+                g_radarConfig.customChannelR.load(),
+                g_radarConfig.customChannelG.load(),
+                g_radarConfig.customChannelB.load());
+            {
+                std::lock_guard<std::mutex> lock(g_pcaPaletteMutex);
+                currentComputeShader->setMat3("pca_palette_matrix", g_pcaPaletteMatrix);
+            }
             currentComputeShader->setFloatArray("pca_pc1", g_stateAnalyzer.smoothPC1, 12);
             currentComputeShader->setFloatArray("pca_pc2", g_stateAnalyzer.smoothPC2, 12);
             currentComputeShader->setFloatArray("pca_pc3", g_stateAnalyzer.smoothPC3, 12);
@@ -1620,7 +1711,6 @@ int main(int argc, char* argv[]) {
             currentComputeShader->setFloat("nca_topology", g_radarConfig.ncaTopology.load());
             currentComputeShader->setFloat("nca_pole_radial", g_radarConfig.ncaPoleRadial.load());
             currentComputeShader->setFloat("nca_pole_azimuthal", g_radarConfig.ncaPoleAzimuthal.load());
-            currentComputeShader->setFloat("waveform_mix", currentWaveformMix);
             currentComputeShader->setFloat("nca_state_dim", currentDimFactor);
             
             // Update uniform buffer with frame counter and time
@@ -1631,13 +1721,12 @@ int main(int argc, char* argv[]) {
             glBindBuffer(GL_UNIFORM_BUFFER, uniformBuffer);
             glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &uniformData);
 
-            // Update audio texture with FFT data (row 0) and waveform data (row 1) (with mutex protection)
+            // Update audio texture with FFT data (with mutex protection)
             {
                 std::lock_guard<std::mutex> lock(audioMutex);
                 glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D, audioTexture);
                 glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, MUSICAL_BINS, 1, GL_RED, GL_FLOAT, fftMagnitudes.data());
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 1, MUSICAL_BINS, 1, GL_RED, GL_FLOAT, waveformSamples.data());
             }
 
             // Update camera texture with camera data (with mutex protection)

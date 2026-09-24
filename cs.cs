@@ -23,7 +23,9 @@ uniform float nca_topology; // 0.0 = Cartesian, 1.0 = Polar (pole in center)
 uniform float nca_pole_radial;    // +1.0 = outward pole, -1.0 = reversed/inward pole
 uniform float nca_pole_azimuthal; // +1.0 = standard CCW spin, -1.0 = reversed CW spin
 uniform float spectrogram_influence; // Controls how much spectrogram affects NCA state & beam visibility (0.0 to 2.0)
-uniform int nca_channel_view;         // -1 = composite, 0..11 = direct channel w/o CC, 12 = raw RGB, 13 = 3 main PCA components for RGB
+uniform int nca_channel_view;         // -1 = composite, 0..11 = direct channel w/o CC, 12 = 3 selectable channels (RGB), 13 = 3 main PCA components for RGB
+uniform ivec3 custom_channels;         // Selectable 3 channels (r, g, b) in [0..11]
+uniform mat3 pca_palette_matrix;       // 3x3 PCA orientation and hue rotation matrix
 uniform float pca_pc1[12];            // 1st Principal Component (Red)
 uniform float pca_pc2[12];            // 2nd Principal Component (Green)
 uniform float pca_pc3[12];            // 3rd Principal Component (Blue)
@@ -274,17 +276,16 @@ vec4 camlap(ivec2 coord) {
 vec4 get_cell_color(uint x, uint y) {
     float[12] states_out = get_xy(x, y);
     vec4 col;
-    if (nca_channel_view >= 0 && nca_channel_view < 12) {
-        // Direct channel view w/o color correction (raw activation magnitude in grayscale)
-        float chVal = clamp(abs(states_out[nca_channel_view]), 0.0, 1.5);
-        col = vec4(chVal, chVal, chVal, 1.0);
-    } else if (nca_channel_view == 12) {
-        // Direct raw RGB channels (0, 1, 2) w/o color correction
-        col = vec4(clamp(abs(states_out[0]), 0.0, 1.5),
-                   clamp(abs(states_out[1]), 0.0, 1.5),
-                   clamp(abs(states_out[2]), 0.0, 1.5), 1.0);
+    if (nca_channel_view == 12) {
+        // Selectable 3 channels mapped to RGB w/o color correction
+        int chR = clamp(custom_channels.x, 0, 11);
+        int chG = clamp(custom_channels.y, 0, 11);
+        int chB = clamp(custom_channels.z, 0, 11);
+        col = vec4(clamp(abs(states_out[chR]), 0.0, 1.5),
+                   clamp(abs(states_out[chG]), 0.0, 1.5),
+                   clamp(abs(states_out[chB]), 0.0, 1.5), 1.0);
     } else if (nca_channel_view == 13) {
-        // 3 main PCA components projected to RGB (w/o color correction)
+        // 3 main PCA components projected to RGB with re-rollable / shiftable palette matrix
         float r_proj = 0.0;
         float g_proj = 0.0;
         float b_proj = 0.0;
@@ -294,10 +295,17 @@ vec4 get_cell_color(uint x, uint y) {
             g_proj += centered * pca_pc2[c];
             b_proj += centered * pca_pc3[c];
         }
-        float r_val = clamp(r_proj / (2.5 * max(0.05, pca_std.x)) + 0.5, 0.0, 1.0);
-        float g_val = clamp(g_proj / (2.5 * max(0.05, pca_std.y)) + 0.5, 0.0, 1.0);
-        float b_val = clamp(b_proj / (2.5 * max(0.05, pca_std.z)) + 0.5, 0.0, 1.0);
-        col = vec4(r_val, g_val, b_val, 1.0);
+        vec3 p = vec3(
+            r_proj / (2.5 * max(0.05, pca_std.x)),
+            g_proj / (2.5 * max(0.05, pca_std.y)),
+            b_proj / (2.5 * max(0.05, pca_std.z))
+        );
+        vec3 rotated = pca_palette_matrix * p;
+        col = vec4(clamp(rotated + vec3(0.5), 0.0, 1.0), 1.0);
+    } else if (nca_channel_view >= 0 && nca_channel_view < 12) {
+        // Direct single channel preview w/o color correction
+        float chVal = clamp(abs(states_out[nca_channel_view]), 0.0, 1.5);
+        col = vec4(chVal, chVal, chVal, 1.0);
     } else {
         // Default composite with color correction
         col = vec4(states_out[3], states_out[0], states_out[3], states_out[3]);
@@ -443,16 +451,26 @@ void main() {
     angle = angle + 0.75;
     angle = fract(angle);
 
-    float MUSICAL_BINS = 88.0 * 4.0;
+    float numBins = float(imageSize(audioTexture).x);
+    if (numBins < 1.0) numBins = 512.0;
     float fmin = clamp(freq_range.x, 0.0, 1.0);
     float fmax = clamp(freq_range.y, 0.0, 1.0);
     if (fmax <= fmin) fmax = 1.0;
-    float radNorm = clamp((1.0 - radius / 0.8), 0.0, 1.0);
-    float freqNorm = mix(fmin, fmax, radNorm);
-    int audioIndex = int(freqNorm * (MUSICAL_BINS - 1.0));
-    audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS) - 1);
 
-    float audioMagnitude = imageLoad(audioTexture, ivec2(audioIndex, 0)).r;
+    // Radially map from center (bass) to screen edge (treble)
+    // radius = 0 is center (bass fmin), radius ~ 1.05 is screen edge (treble fmax)
+    // Eliminates empty center (bass is in the center) and eliminates overly long bins at perimeter
+    float radNorm = clamp(radius / 1.05, 0.0, 1.0);
+    float freqNorm = mix(fmin, fmax, radNorm);
+
+    // Continuous linear interpolation between FFT bins
+    float binPos = freqNorm * (numBins - 1.0);
+    int b0 = int(floor(binPos));
+    int b1 = min(b0 + 1, int(numBins) - 1);
+    float bFrac = binPos - float(b0);
+    float mag0 = imageLoad(audioTexture, ivec2(b0, 0)).r;
+    float mag1 = imageLoad(audioTexture, ivec2(b1, 0)).r;
+    float audioMagnitude = mix(mag0, mag1, bFrac);
     audioMagnitude = clamp(audioMagnitude * 200.0, 0.0, 1.0);
 
     vec3 color = vec3(audioMagnitude);

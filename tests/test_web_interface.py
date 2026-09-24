@@ -67,7 +67,22 @@ def main():
     assert "reinforceCandidate" not in html, "reinforceCandidate must be removed"
     assert "resetToRandomWeights" not in html, "resetToRandomWeights must be removed"
     assert "resetWiringMatrix" not in html, "resetWiringMatrix must be removed"
-    print("  -> Passed. Simulation Resolution UI verified and Genetic Algorithm controls confirmed removed.")
+
+    # Verify Waveform and Channel Auto-Cycle are REMOVED as requested
+    assert "waveform" not in html.lower(), "Waveform references must be removed"
+    assert "autoCycleChannels" not in html, "autoCycleChannels must be removed"
+    assert "cycleIntervalSlider" not in html, "cycleIntervalSlider must be removed"
+
+    # Verify Custom 3 Channels and PCA Palette controls
+    assert "chBtnCustom" in html, "HTML should contain 3 Channels (RGB) button"
+    assert "selChR" in html, "HTML should contain Red channel selector"
+    assert "selChG" in html, "HTML should contain Green channel selector"
+    assert "selChB" in html, "HTML should contain Blue channel selector"
+    assert "rerollPcaPalette" in html, "HTML should contain reroll PCA palette function"
+    assert "shiftPcaPalette" in html, "HTML should contain shift PCA palette function"
+    assert "pcaHueSlider" in html, "HTML should contain PCA hue slider"
+    assert "decayMedBtn" in html, "HTML should contain decay persistence Medium button"
+    print("  -> Passed. UI elements verified: 3 Channels (RGB), PCA Palette, Decay persistence, and clean removals.")
 
     # Other core features remain intact
     assert "setTopology" in html, "HTML should contain setTopology"
@@ -76,7 +91,6 @@ def main():
     assert "reverseSpinBtn" in html, "HTML should contain reverseSpinBtn"
     assert "specInfluenceSlider" in html, "HTML should contain specInfluenceSlider"
     assert "setNcaChannel" in html, "HTML should contain setNcaChannel"
-    assert "toggleAutoCycleChannels" in html, "HTML should contain toggleAutoCycleChannels"
     assert "chBtnPca" in html, "HTML should contain chBtnPca button"
     assert "triggerImprint" in html, "HTML should contain Easter egg triggerImprint"
     assert "imprintInput" in html, "HTML should contain arbitrary message input"
@@ -93,11 +107,18 @@ def main():
     assert "auto_freq" in status
     assert "spectrogram_influence" in status
     assert "nca_channel_view" in status
-    assert "nca_auto_cycle" in status
     assert "nca_topology" in status
     assert "topology" in status
     assert "nca_pole_radial" in status
     assert "nca_pole_azimuthal" in status
+
+    # Verify requested default values
+    assert status["auto_speed"] is True, "Default auto_speed must be True"
+    assert abs(status["spectrogram_influence"] - 1.0) < 0.05, "Default spectrogram_influence must be 1.0"
+    assert abs(status["nca_topology"] - 1.0) < 0.05, "Default nca_topology must be Polar (1.0)"
+    assert status["reverse_pole"] is True, "Default reverse_pole must be True (inward)"
+    assert abs(status["decay_time"] - 0.9700) < 0.005, f"Default decay_time must be Medium (0.9700), got {status.get('decay_time')}"
+    assert status["sim_width"] == 800 and status["sim_height"] == 600, f"Default resolution must be 800x600, got {status.get('sim_width')}x{status.get('sim_height')}"
 
     # Verify simulation resolution fields
     assert "sim_width" in status, "Status must contain sim_width"
@@ -107,11 +128,18 @@ def main():
     assert "sim_preset" in status, "Status must contain sim_preset"
     assert "sim_filtering" in status, "Status must contain sim_filtering"
 
-    # Verify genetic fields removed from status
+    # Verify custom channels and PCA fields
+    assert "custom_channel_r" in status, "Status must contain custom_channel_r"
+    assert "custom_channel_g" in status, "Status must contain custom_channel_g"
+    assert "custom_channel_b" in status, "Status must contain custom_channel_b"
+    assert "pca_hue_shift" in status, "Status must contain pca_hue_shift"
+
+    # Verify removed fields
+    assert "waveform_mode" not in status, "waveform_mode must be removed from status"
+    assert "waveform_active" not in status, "waveform_active must be removed from status"
+    assert "nca_auto_cycle" not in status, "nca_auto_cycle must be removed from status"
     assert "genetic_generation" not in status, "genetic_generation must be removed from status"
-    assert "genetic_has_candidate" not in status, "genetic_has_candidate must be removed from status"
-    assert "genetic_mutated_count" not in status, "genetic_mutated_count must be removed from status"
-    print("  -> Passed. Status API returns simulation resolution and confirmed genetic fields removed.")
+    print("  -> Passed. Status API defaults verified: Auto Rhythm Sync ON, Spec Influence 1.0, Polar Inward Rev, Medium Decay, 800x600.")
 
     print("[3] Testing Frequency Scales (log, mel, linear)...")
     res = post_json("/api/controls", {"scale": "mel"})
@@ -203,17 +231,17 @@ def main():
     assert res["sim_filtering"] == 0, f"Expected filtering 0 (Smooth Hermite), got {res['sim_filtering']}"
     print("  -> Zero-Artifact Filtering Modes (Smooth Hermite, Bilinear, Nearest) verified.")
 
-    # 8.7 Reset to 1:3 Default (267x200)
-    res = post_json("/api/resolution", {"preset": "1:3"})
-    assert res["sim_width"] == 267 and res["sim_height"] == 200
-    assert abs(res["sim_scale"] - 0.333333) < 0.01
-    print(f"  -> Returned to Default 1:3 Preset: {res['sim_width']}x{res['sim_height']}")
+    # 8.7 Reset to 1:1 Default (800x600)
+    res = post_json("/api/resolution", {"preset": "1:1"})
+    assert res["sim_width"] == 800 and res["sim_height"] == 600
+    assert abs(res["sim_scale"] - 1.0) < 0.01
+    print(f"  -> Returned to Default 1:1 Preset: {res['sim_width']}x{res['sim_height']}")
 
     # 8.8 Resolution via /api/controls
     res = post_json("/api/controls", {"sim_preset": "400x300"})
     assert res["sim_width"] == 400 and res["sim_height"] == 300
-    res = post_json("/api/controls", {"sim_preset": "1:3"})
-    assert res["sim_width"] == 267 and res["sim_height"] == 200
+    res = post_json("/api/controls", {"sim_preset": "1:1"})
+    assert res["sim_width"] == 800 and res["sim_height"] == 600
     print("  -> Resolution control via /api/controls verified.")
 
     print("[9] Testing Spectrogram Influence Controls (/api/spectrogram)...")
@@ -228,22 +256,49 @@ def main():
     assert res.get("status") == "state_reset"
     print("  -> Simulation state reset verified.")
 
-    print("[11] Testing Direct NCA Channels View & PCA RGB...")
+    print("[11] Testing Direct NCA Channels View & Custom 3 Channels...")
     for ch in [0, 3, 5, 8, 11]:
         res = post_json("/api/channel", {"channel": ch})
         assert res["nca_channel_view"] == ch
-    res = post_json("/api/channel", {"channel": 12})
+    
+    # Test 3 Selectable Channels mapped to RGB w/o color correction
+    res = post_json("/api/channel", {"channel": 12, "custom_r": 4, "custom_g": 7, "custom_b": 10})
     assert res["nca_channel_view"] == 12
+    assert res["custom_channel_r"] == 4
+    assert res["custom_channel_g"] == 7
+    assert res["custom_channel_b"] == 10
+    print("  -> 3 Selectable Channels mode (Ch 4, Ch 7, Ch 10 -> RGB) verified.")
+
     res = post_json("/api/channel", {"channel": 13})
     assert res["nca_channel_view"] == 13
     res = post_json("/api/channel", {"channel": -1})
     assert res["nca_channel_view"] == -1
-    print("  -> Direct channel selection, raw RGB, and PCA RGB modes verified.")
+    print("  -> Direct channel selection, custom 3 channels, and PCA RGB modes verified.")
+
+    print("[12] Testing PCA Palette Re-roll and Hue Shift Controls (/api/pca/palette)...")
+    res = post_json("/api/pca/palette", {"reroll": True})
+    assert "pca_hue_shift" in res
+    res = post_json("/api/pca/palette", {"shift": 0.7854})
+    assert "pca_hue_shift" in res
+    res = post_json("/api/pca/palette", {"hue": 2.094})
+    assert abs(res["pca_hue_shift"] - 2.094) < 0.02
+    print(f"  -> PCA Palette controls verified (reroll, shift, absolute hue: {res['pca_hue_shift']} rad).")
+
+    # Reset to defaults
+    post_json("/api/controls", {
+        "auto_speed": True,
+        "spectrogram_influence": 1.0,
+        "nca_topology": 1.0,
+        "reverse_pole": True,
+        "decay_time": 0.9700,
+        "sim_preset": "1:1"
+    })
+    post_json("/api/pca/palette", {"hue": 0.0})
 
     print("\n=======================================================")
-    print("🎉 ALL TESTS PASSED! Simulation resolution is verified,")
-    print("   zero-artifact Hermite resampling is active, and")
-    print("   genetic weight modification is cleanly removed.")
+    print("🎉 ALL TESTS PASSED! Defaults, PCA Palette controls,")
+    print("   3 Selectable Channels, and FFT polar spectrogram")
+    print("   are verified and working flawlessly.")
     print("=======================================================")
 
 if __name__ == "__main__":

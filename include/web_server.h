@@ -23,9 +23,9 @@
 // Shared configuration parameters for the radar shader and audio processor
 struct RadarConfig {
     std::atomic<float> scanningSpeed{0.4f};    // Scanning speed in rev/sec (matches default 1.0 / 2.5 = 0.4)
-    std::atomic<float> decayTime{0.995f};      // Decay persistence factor (default 0.995)
-    std::atomic<float> freqMinHz{100.0f};      // Min frequency in Hz (default 100 Hz)
-    std::atomic<float> freqMaxHz{10000.0f};    // Max frequency in Hz (default 10000 Hz)
+    std::atomic<float> decayTime{0.9700f};     // Decay persistence factor (default: Medium 0.9700)
+    std::atomic<float> freqMinHz{60.0f};       // Min frequency in Hz (default 60 Hz)
+    std::atomic<float> freqMaxHz{4000.0f};     // Max frequency in Hz (default 4000 Hz)
     std::atomic<float> freqRangeMin{0.0f};     // Shader radial freq start (0.0 to 1.0)
     std::atomic<float> freqRangeMax{1.0f};     // Shader radial freq end (0.0 to 1.0)
     std::atomic<float> currentFps{0.0f};       // Measured FPS for live display
@@ -34,64 +34,63 @@ struct RadarConfig {
     // Frequency scaling: 0 = log, 1 = mel, 2 = linear
     std::atomic<int> scaleType{0};
 
-    // Autotuning for scanning speed (musical rhythm sync)
-    std::atomic<bool> autoSpeed{false};
+    // Autotuning for scanning speed (musical rhythm sync) - Default ON
+    std::atomic<bool> autoSpeed{true};
     std::atomic<int> rhythmDivision{2};       // 0: 1/4 note (1 beat), 1: 1/2 note, 2: 1 bar (default), 3: 2 bars, 4: 4 bars
     std::atomic<float> detectedBpm{120.0f};
 
     // Autotuning for frequency range / scaling
-    std::atomic<bool> autoFreq{false};
+    std::atomic<bool> autoFreq{true};
     std::atomic<float> autoGain{1.0f};
-
-    // Waveform visualization options:
-    // 0 = Off / Spectrogram only
-    // 1 = Auto (switch to waveform when rhythm is not established)
-    // 2 = Always Waveform
-    std::atomic<int> waveformMode{1};
-    std::atomic<bool> rhythmEstablished{false};
-    mutable std::atomic<bool> waveformActive{true};
 
     // NCA weight perturbation controls
     std::atomic<float> ncaPerturb{0.0f};      // 0.0 (unperturbed) to 1.0 (heavy perturbation)
     std::atomic<float> ncaSeed{0.0f};         // Mutation seed
     std::atomic<float> ncaStepScale{1.0f};    // NCA reaction step scale (default 1.0)
 
-    // Topology control: 0.0 = Cartesian, 1.0 = Polar (pole in center)
-    std::atomic<float> ncaTopology{0.0f};
-    std::atomic<float> ncaPoleRadial{1.0f};    // +1.0 = outward, -1.0 = inward (reversed radial pole)
-    std::atomic<float> ncaPoleAzimuthal{1.0f}; // +1.0 = CCW, -1.0 = CW (reversed spin)
-    std::atomic<bool> ncaReversePole{false};
+    // Topology control: 0.0 = Cartesian, 1.0 = Polar (pole in center) - Default: Polar Inward Rev
+    std::atomic<float> ncaTopology{1.0f};      // Default: Polar (1.0)
+    std::atomic<float> ncaPoleRadial{-1.0f};   // Default: Inward reverse pole (-1.0)
+    std::atomic<float> ncaPoleAzimuthal{1.0f}; // +1.0 = CCW, -1.0 = CW
+    std::atomic<bool> ncaReversePole{true};    // Default: true (Inward pole)
     std::atomic<bool> ncaReverseSpin{false};
 
     // Spectrogram influence & scanning line visibility (0.0 = completely muted / beam hidden)
-    std::atomic<float> spectrogramInfluence{1.0f};
+    std::atomic<float> spectrogramInfluence{1.0f}; // Default: 1.0
     std::atomic<bool> resetStateRequested{false};
 
-    // Direct NCA Channel View (-1 = default composite, 0..11 = direct channel w/o color correction, 12 = raw RGB)
+    // NCA Channel View (-1 = default composite, 12 = selectable 3 channels RGB, 13 = PCA RGB)
     std::atomic<int> ncaChannelView{-1};
-    std::atomic<bool> ncaAutoCycleChannels{false};
-    std::atomic<float> ncaCycleInterval{1.5f};
+    std::atomic<int> customChannelR{0};        // Default: Channel 0 for Red
+    std::atomic<int> customChannelG{1};        // Default: Channel 1 for Green
+    std::atomic<int> customChannelB{2};        // Default: Channel 2 for Blue
 
-    // Simulation Resolution configuration
-    std::atomic<int> simWidth{267};
-    std::atomic<int> simHeight{200};
-    std::atomic<int> simScaleMode{0};    // 0 = Relative, 1 = Fixed
-    std::atomic<float> simScale{0.333333f};
-    std::atomic<int> simFiltering{0};    // 0 = Smooth Hermite, 1 = Bilinear, 2 = Nearest
+    // PCA Palette controls (re-roll orientation and hue shift)
+    std::atomic<bool> pcaRerollRequested{false};
+    std::atomic<float> pcaPendingHueShift{-999.0f};
+    std::atomic<float> pcaPendingHueDelta{0.0f};
+    std::atomic<float> pcaHueShift{0.0f};
+
+    // Simulation Resolution configuration - Default: 800x600 (Relative 1:1)
+    std::atomic<int> simWidth{800};
+    std::atomic<int> simHeight{600};
+    std::atomic<int> simScaleMode{0};          // 0 = Relative, 1 = Fixed
+    std::atomic<float> simScale{1.0f};
+    std::atomic<int> simFiltering{0};          // 0 = Smooth Hermite, 1 = Bilinear, 2 = Nearest
     std::atomic<float> ncaViewportDim{1.0f};
     std::atomic<bool> simResPending{false};
     std::mutex simResMutex;
 
     struct SimResolutionRequest {
-        int width{267};
-        int height{200};
+        int width{800};
+        int height{600};
         int scaleMode{0};
-        float scale{0.333333f};
-        std::string preset{"1:3"};
+        float scale{1.0f};
+        std::string preset{"1:1"};
         bool resample{true};
     };
     SimResolutionRequest pendingSimRes;
-    std::string simPresetName{"1:3"};
+    std::string simPresetName{"1:1"};
 
     // Action triggers for Structure Imprint Easter Egg
     std::atomic<bool> hasPendingImprint{false};
@@ -149,23 +148,7 @@ struct RadarConfig {
         return "log";
     }
 
-    std::string waveformModeName() const {
-        int m = waveformMode.load();
-        if (m == 0) return "off";
-        if (m == 2) return "always";
-        return "auto";
-    }
-
-    bool isWaveformActive() const {
-        int m = waveformMode.load();
-        if (m == 2) return true;
-        if (m == 0) return false;
-        return !rhythmEstablished.load();
-    }
-
     std::string toJson() const {
-        bool active = isWaveformActive();
-        waveformActive.store(active);
         std::ostringstream ss;
         ss << std::fixed << std::setprecision(4);
         ss << "{\n";
@@ -177,10 +160,6 @@ struct RadarConfig {
         ss << "  \"freq_range_high\": " << freqRangeMax.load() << ",\n";
         ss << "  \"scale_type\": " << scaleType.load() << ",\n";
         ss << "  \"scale\": \"" << scaleName() << "\",\n";
-        ss << "  \"waveform_mode\": " << waveformMode.load() << ",\n";
-        ss << "  \"waveform_mode_name\": \"" << waveformModeName() << "\",\n";
-        ss << "  \"rhythm_established\": " << (rhythmEstablished.load() ? "true" : "false") << ",\n";
-        ss << "  \"waveform_active\": " << (active ? "true" : "false") << ",\n";
         ss << "  \"auto_speed\": " << (autoSpeed.load() ? "true" : "false") << ",\n";
         ss << "  \"rhythm_division\": " << rhythmDivision.load() << ",\n";
         ss << "  \"detected_bpm\": " << detectedBpm.load() << ",\n";
@@ -197,8 +176,10 @@ struct RadarConfig {
         ss << "  \"reverse_spin\": " << (ncaReverseSpin.load() ? "true" : "false") << ",\n";
         ss << "  \"spectrogram_influence\": " << spectrogramInfluence.load() << ",\n";
         ss << "  \"nca_channel_view\": " << ncaChannelView.load() << ",\n";
-        ss << "  \"nca_auto_cycle\": " << (ncaAutoCycleChannels.load() ? "true" : "false") << ",\n";
-        ss << "  \"nca_cycle_interval\": " << ncaCycleInterval.load() << ",\n";
+        ss << "  \"custom_channel_r\": " << customChannelR.load() << ",\n";
+        ss << "  \"custom_channel_g\": " << customChannelG.load() << ",\n";
+        ss << "  \"custom_channel_b\": " << customChannelB.load() << ",\n";
+        ss << "  \"pca_hue_shift\": " << pcaHueShift.load() << ",\n";
         ss << "  \"sim_width\": " << simWidth.load() << ",\n";
         ss << "  \"sim_height\": " << simHeight.load() << ",\n";
         ss << "  \"sim_scale_mode\": " << simScaleMode.load() << ",\n";
@@ -553,9 +534,9 @@ private:
                 m_config.simScaleMode.store(mode);
                 m_config.simScale.store(scale);
                 m_config.requestSimulationResolution(w, h, mode, scale, preset, resample);
-                for (int waitIter = 0; waitIter < 30; waitIter++) {
+                for (int waitIter = 0; waitIter < 100; waitIter++) {
                     if (!m_config.hasPendingSimulationResolution() && m_config.simWidth.load() == w) break;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 }
             }
             std::string resBody = m_config.toJson();
@@ -613,7 +594,40 @@ private:
             return;
         }
 
-        // Direct NCA Channel View and Auto-Cycling endpoint
+        // PCA Palette control endpoint (re-roll orientation and hue shift)
+        if (cleanPath == "/api/pca/palette" || cleanPath == "/api/palette") {
+            if (method == "POST") {
+                size_t bodyPos = request.find("\r\n\r\n");
+                std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
+                std::string action;
+                bool reroll = false;
+                if ((extractJsonBool(body, "reroll", reroll) && reroll) || (extractJsonString(body, "action", action) && action == "reroll")) {
+                    m_config.pcaRerollRequested.store(true);
+                }
+                float shift;
+                if (extractJsonFloat(body, "shift", shift) || extractJsonFloat(body, "delta", shift) || extractJsonFloat(body, "hue_delta", shift)) {
+                    m_config.pcaPendingHueDelta.store(shift);
+                }
+                float hue;
+                if (extractJsonFloat(body, "hue", hue) || extractJsonFloat(body, "hue_shift", hue) || extractJsonFloat(body, "pca_hue_shift", hue)) {
+                    m_config.pcaPendingHueShift.store(hue);
+                    m_config.pcaHueShift.store(hue);
+                }
+            }
+            std::string resBody = m_config.toJson();
+            std::ostringstream response;
+            response << "HTTP/1.1 200 OK\r\n"
+                     << "Content-Type: application/json\r\n"
+                     << "Content-Length: " << resBody.length() << "\r\n"
+                     << cors
+                     << "Connection: close\r\n\r\n"
+                     << resBody;
+            std::string resStr = response.str();
+            send(clientFd, resStr.c_str(), resStr.length(), 0);
+            return;
+        }
+
+        // Direct NCA Channel View & Custom 3-Channel selection
         if (cleanPath == "/api/channel" || cleanPath == "/api/channels") {
             if (method == "POST") {
                 size_t bodyPos = request.find("\r\n\r\n");
@@ -629,19 +643,22 @@ private:
                         m_config.ncaChannelView.store(13);
                     } else if (chStr == "composite" || chStr == "default") {
                         m_config.ncaChannelView.store(-1);
-                    } else if (chStr == "rgb" || chStr == "raw_rgb") {
+                    } else if (chStr == "custom" || chStr == "3ch" || chStr == "rgb" || chStr == "raw_rgb") {
                         m_config.ncaChannelView.store(12);
                     }
                 }
-                bool autoCycle;
-                if (extractJsonBool(body, "auto_cycle", autoCycle) || extractJsonBool(body, "nca_auto_cycle", autoCycle)) {
-                    m_config.ncaAutoCycleChannels.store(autoCycle);
+                int r, g, b;
+                if (extractJsonInt(body, "custom_r", r) || extractJsonInt(body, "r", r) || extractJsonInt(body, "custom_channel_r", r)) {
+                    m_config.customChannelR.store(std::max(0, std::min(11, r)));
+                    m_config.ncaChannelView.store(12);
                 }
-                float interval;
-                if (extractJsonFloat(body, "cycle_interval", interval) || extractJsonFloat(body, "nca_cycle_interval", interval)) {
-                    if (interval >= 0.1f && interval <= 60.0f) {
-                        m_config.ncaCycleInterval.store(interval);
-                    }
+                if (extractJsonInt(body, "custom_g", g) || extractJsonInt(body, "g", g) || extractJsonInt(body, "custom_channel_g", g)) {
+                    m_config.customChannelG.store(std::max(0, std::min(11, g)));
+                    m_config.ncaChannelView.store(12);
+                }
+                if (extractJsonInt(body, "custom_b", b) || extractJsonInt(body, "b", b) || extractJsonInt(body, "custom_channel_b", b)) {
+                    m_config.customChannelB.store(std::max(0, std::min(11, b)));
+                    m_config.ncaChannelView.store(12);
                 }
             }
             std::string resBody = m_config.toJson();
@@ -797,19 +814,6 @@ private:
                 }
             }
 
-            // Waveform mode setting (0: off, 1: auto, 2: always)
-            if (extractJsonString(body, "waveform_mode", strVal)) {
-                if (strVal == "auto") m_config.waveformMode.store(1);
-                else if (strVal == "always" || strVal == "on" || strVal == "waveform") m_config.waveformMode.store(2);
-                else if (strVal == "off" || strVal == "spectrogram") m_config.waveformMode.store(0);
-                m_config.waveformActive.store(m_config.isWaveformActive());
-            } else if (extractJsonInt(body, "waveform_mode", intVal)) {
-                if (intVal >= 0 && intVal <= 2) {
-                    m_config.waveformMode.store(intVal);
-                    m_config.waveformActive.store(m_config.isWaveformActive());
-                }
-            }
-
             // NCA weight perturbation controls
             if (extractJsonFloat(body, "nca_perturb", val)) {
                 if (val >= 0.0f && val <= 2.0f) {
@@ -855,20 +859,22 @@ private:
                 float scale = m_config.simScale.load();
                 if (presetStr == "native" || presetStr == "1:1") {
                     mode = 0; scale = 1.0f; w = 800; h = 600;
-                } else if (presetStr == "1:1.5" || presetStr == "2:3" || presetStr == "533x400") {
+                } else if (presetStr == "1:1.5" || presetStr == "2:3") {
                     mode = 0; scale = 0.666667f; w = 533; h = 400;
-                } else if (presetStr == "half" || presetStr == "1:2" || presetStr == "400x300") {
+                } else if (presetStr == "half" || presetStr == "1:2") {
                     mode = 0; scale = 0.5f; w = 400; h = 300;
-                } else if (presetStr == "original" || presetStr == "1:3" || presetStr == "default" || presetStr == "267x200") {
+                } else if (presetStr == "original" || presetStr == "1:3" || presetStr == "default") {
                     mode = 0; scale = 0.333333f; w = 267; h = 200;
-                } else if (presetStr == "quarter" || presetStr == "1:4" || presetStr == "200x150") {
+                } else if (presetStr == "quarter" || presetStr == "1:4") {
                     mode = 0; scale = 0.25f; w = 200; h = 150;
-                } else if (presetStr == "sixth" || presetStr == "1:6" || presetStr == "133x100") {
+                } else if (presetStr == "sixth" || presetStr == "1:6") {
                     mode = 0; scale = 0.166667f; w = 133; h = 100;
                 } else if (presetStr == "160x120") {
                     mode = 1; w = 160; h = 120;
                 } else if (presetStr == "200x150") {
                     mode = 1; w = 200; h = 150;
+                } else if (presetStr == "267x200") {
+                    mode = 1; w = 267; h = 200;
                 } else if (presetStr == "320x240") {
                     mode = 1; w = 320; h = 240;
                 } else if (presetStr == "400x300") {
@@ -883,9 +889,9 @@ private:
                 m_config.simScaleMode.store(mode);
                 m_config.simScale.store(scale);
                 m_config.requestSimulationResolution(w, h, mode, scale, presetStr, true);
-                for (int waitIter = 0; waitIter < 30; waitIter++) {
+                for (int waitIter = 0; waitIter < 100; waitIter++) {
                     if (!m_config.hasPendingSimulationResolution() && m_config.simWidth.load() == w) break;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 }
             }
             if (extractJsonFloat(body, "sim_scale", val)) {
@@ -923,13 +929,28 @@ private:
                     m_config.ncaChannelView.store(intVal);
                 }
             }
-            if (extractJsonBool(body, "nca_auto_cycle", boolVal) || extractJsonBool(body, "auto_cycle", boolVal)) {
-                m_config.ncaAutoCycleChannels.store(boolVal);
+            int chVal;
+            if (extractJsonInt(body, "custom_channel_r", chVal) || extractJsonInt(body, "custom_r", chVal) || extractJsonInt(body, "r", chVal)) {
+                m_config.customChannelR.store(std::max(0, std::min(11, chVal)));
+                m_config.ncaChannelView.store(12);
             }
-            if (extractJsonFloat(body, "nca_cycle_interval", val) || extractJsonFloat(body, "cycle_interval", val)) {
-                if (val >= 0.1f && val <= 60.0f) {
-                    m_config.ncaCycleInterval.store(val);
-                }
+            if (extractJsonInt(body, "custom_channel_g", chVal) || extractJsonInt(body, "custom_g", chVal) || extractJsonInt(body, "g", chVal)) {
+                m_config.customChannelG.store(std::max(0, std::min(11, chVal)));
+                m_config.ncaChannelView.store(12);
+            }
+            if (extractJsonInt(body, "custom_channel_b", chVal) || extractJsonInt(body, "custom_b", chVal) || extractJsonInt(body, "b", chVal)) {
+                m_config.customChannelB.store(std::max(0, std::min(11, chVal)));
+                m_config.ncaChannelView.store(12);
+            }
+            if (extractJsonBool(body, "pca_reroll", boolVal) && boolVal) {
+                m_config.pcaRerollRequested.store(true);
+            }
+            if (extractJsonFloat(body, "pca_hue_shift", val) || extractJsonFloat(body, "pca_shift", val)) {
+                m_config.pcaPendingHueShift.store(val);
+                m_config.pcaHueShift.store(val);
+            }
+            if (extractJsonFloat(body, "pca_hue_delta", val)) {
+                m_config.pcaPendingHueDelta.store(val);
             }
 
             std::string resBody = m_config.toJson();
@@ -1177,7 +1198,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       </div>
 
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:2px;">
-        <button id="autoSpeedBtn" class="toggle-btn" onclick="toggleAutoSpeed()">
+        <button id="autoSpeedBtn" class="toggle-btn active" onclick="toggleAutoSpeed()">
           ⚡ Auto Rhythm Sync
         </button>
         <div id="rhythmInfo" class="meta-row" style="margin:0;">
@@ -1217,19 +1238,19 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     <div class="section">
       <div class="section-head">
         <span class="section-title">NCA Topology</span>
-        <span id="topologyLabel" class="val">Cartesian (0.0)</span>
+        <span id="topologyLabel" class="val">Polar (Inward Pole)</span>
       </div>
       <div class="btn-row">
-        <button class="btn active" id="topoBtnCart" onclick="setTopology(0.0)">Cartesian</button>
+        <button class="btn" id="topoBtnCart" onclick="setTopology(0.0)">Cartesian</button>
         <button class="btn" id="topoBtnSpiral" onclick="setTopology(0.5)">Spiral / Vortex</button>
-        <button class="btn" id="topoBtnPolar" onclick="setTopology(1.0)">Polar (Center)</button>
+        <button class="btn active" id="topoBtnPolar" onclick="setTopology(1.0)">Polar (Center)</button>
       </div>
-      <input type="range" id="topologySlider" min="0.0" max="1.0" step="0.02" value="0.0">
+      <input type="range" id="topologySlider" min="0.0" max="1.0" step="0.02" value="1.0">
       
       <!-- Reverse Pole options -->
       <div class="btn-row" style="margin-top:2px;">
-        <button class="toggle-btn" id="reversePoleBtn" style="flex:1;" onclick="toggleReversePole()" title="Reverse radial pole direction (inward vs outward)">
-          🔄 Reverse Pole: Outward
+        <button class="toggle-btn active" id="reversePoleBtn" style="flex:1;" onclick="toggleReversePole()" title="Reverse radial pole direction (inward vs outward)">
+          🔄 Reverse Pole: Inward
         </button>
         <button class="toggle-btn" id="reverseSpinBtn" style="flex:1;" onclick="toggleReverseSpin()" title="Reverse azimuthal rotation (CW vs CCW)">
           🔃 Spin: CCW
@@ -1238,36 +1259,108 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 
       <div class="meta-row">
         <span>Sobel Filter Field:</span>
-        <span id="topologyDesc">Cartesian ∇x, ∇y (Original)</span>
+        <span id="topologyDesc">Inward Sink ∇r, Azimuthal ∇θ</span>
       </div>
     </div>
 
-    <!-- NCA Channels (Direct View & Auto-Cycling w/o Color Correction) -->
+    <!-- NCA Channels (Direct View, 3 Selectable Channels & PCA Palette Controls) -->
     <div class="section">
       <div class="section-head">
         <span class="section-title">NCA Channels</span>
         <span id="channelViewLabel" class="val">Composite (CC)</span>
       </div>
 
-      <!-- Auto-Cycle Toggle and Interval -->
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
-        <button id="autoCycleChannelsBtn" class="toggle-btn" style="flex:1;" onclick="toggleAutoCycleChannels()" title="Automatically cycle sequentially through NCA channels 0 to 11">
-          🔄 Auto-Cycle Channels
-        </button>
-        <div style="display:flex; align-items:center; gap:5px;">
-          <span style="font-size:0.75rem; color:var(--text-dim);">Interval:</span>
-          <span id="cycleIntervalVal" class="val" style="font-size:0.75rem;">1.5s</span>
-        </div>
-      </div>
-      <input type="range" id="cycleIntervalSlider" min="0.2" max="5.0" step="0.1" value="1.5" oninput="setCycleInterval(this.value)">
-
-      <!-- Channel Selector Grid -->
+      <!-- Channel Selector Modes -->
       <div class="btn-row">
         <button class="btn active" id="chBtnComp" onclick="setNcaChannel(-1)" title="Standard composite output with purple/green color correction">Composite (CC)</button>
-        <button class="btn" id="chBtnRgb" onclick="setNcaChannel(12)" title="Direct RGB output from channels 0, 1, 2 w/o color correction">Raw RGB (0..2)</button>
+        <button class="btn" id="chBtnCustom" onclick="setNcaChannel(12)" title="Display 3 user-selected channels directly mapped to RGB w/o color correction">3 Channels (RGB)</button>
         <button class="btn" id="chBtnPca" onclick="setNcaChannel(13)" title="3 main PCA components projected to RGB (w/o color correction)" style="border-color:#bb66ff; color:#dd88ff; font-weight:700;">🌈 PCA RGB (3 PCs)</button>
       </div>
 
+      <!-- 3 Selectable Channels Selector Bar -->
+      <div id="customChannelsPanel" style="display:flex; flex-direction:column; gap:5px; background:rgba(0,0,0,0.25); border:1px solid var(--card-border); border-radius:5px; padding:6px 10px; margin-top:2px;">
+        <div class="meta-row" style="margin:0;">
+          <span style="font-weight:600; color:var(--text-muted);">Custom 3-Channel RGB Mapping:</span>
+          <span id="customChannelsDesc" style="color:var(--accent); font-weight:700;">R: Ch 0 | G: Ch 1 | B: Ch 2</span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <div style="flex:1; display:flex; flex-direction:column; gap:2px;">
+            <label style="font-size:0.68rem; color:#ff7777; font-weight:700;">Red Channel</label>
+            <select id="selChR" onchange="updateCustomChannels()" style="background:#15222d; color:#ffffff; border:1px solid #ff5555; border-radius:4px; padding:4px; font-size:0.75rem; font-family:monospace; cursor:pointer;">
+              <option value="0" selected>Ch 0</option>
+              <option value="1">Ch 1</option>
+              <option value="2">Ch 2</option>
+              <option value="3">Ch 3</option>
+              <option value="4">Ch 4</option>
+              <option value="5">Ch 5</option>
+              <option value="6">Ch 6</option>
+              <option value="7">Ch 7</option>
+              <option value="8">Ch 8</option>
+              <option value="9">Ch 9</option>
+              <option value="10">Ch 10</option>
+              <option value="11">Ch 11</option>
+            </select>
+          </div>
+          <div style="flex:1; display:flex; flex-direction:column; gap:2px;">
+            <label style="font-size:0.68rem; color:#55ff88; font-weight:700;">Green Channel</label>
+            <select id="selChG" onchange="updateCustomChannels()" style="background:#15222d; color:#ffffff; border:1px solid #33cc66; border-radius:4px; padding:4px; font-size:0.75rem; font-family:monospace; cursor:pointer;">
+              <option value="0">Ch 0</option>
+              <option value="1" selected>Ch 1</option>
+              <option value="2">Ch 2</option>
+              <option value="3">Ch 3</option>
+              <option value="4">Ch 4</option>
+              <option value="5">Ch 5</option>
+              <option value="6">Ch 6</option>
+              <option value="7">Ch 7</option>
+              <option value="8">Ch 8</option>
+              <option value="9">Ch 9</option>
+              <option value="10">Ch 10</option>
+              <option value="11">Ch 11</option>
+            </select>
+          </div>
+          <div style="flex:1; display:flex; flex-direction:column; gap:2px;">
+            <label style="font-size:0.68rem; color:#66aaff; font-weight:700;">Blue Channel</label>
+            <select id="selChB" onchange="updateCustomChannels()" style="background:#15222d; color:#ffffff; border:1px solid #4488ff; border-radius:4px; padding:4px; font-size:0.75rem; font-family:monospace; cursor:pointer;">
+              <option value="0">Ch 0</option>
+              <option value="1">Ch 1</option>
+              <option value="2" selected>Ch 2</option>
+              <option value="3">Ch 3</option>
+              <option value="4">Ch 4</option>
+              <option value="5">Ch 5</option>
+              <option value="6">Ch 6</option>
+              <option value="7">Ch 7</option>
+              <option value="8">Ch 8</option>
+              <option value="9">Ch 9</option>
+              <option value="10">Ch 10</option>
+              <option value="11">Ch 11</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- PCA Palette Controls (Re-roll & Shift Palette) -->
+      <div id="pcaPalettePanel" style="display:flex; flex-direction:column; gap:5px; background:rgba(187,102,255,0.08); border:1px solid rgba(187,102,255,0.3); border-radius:5px; padding:6px 10px; margin-top:2px;">
+        <div class="meta-row" style="margin:0;">
+          <span style="font-weight:600; color:#dd88ff;">PCA Palette Controls:</span>
+          <span id="pcaHueVal" style="color:var(--accent-cyan); font-family:monospace;">0° (Original)</span>
+        </div>
+        <div class="btn-row" style="margin:0;">
+          <button class="btn" onclick="rerollPcaPalette()" style="flex:1.2; border-color:#bb66ff; color:#dd88ff; font-weight:700;" title="Re-roll PCA color axes randomly in SO(3)">🎲 Re-roll Palette</button>
+          <button class="btn" onclick="shiftPcaPalette(0.7854)" style="flex:1;" title="Shift palette hue by +45° around achromatic axis">🔄 Shift +45°</button>
+          <button class="btn" onclick="shiftPcaPalette(1.5708)" style="flex:1;" title="Shift palette hue by +90° around achromatic axis">🔄 Shift +90°</button>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:2px; margin-top:2px;">
+          <div class="meta-row" style="margin:0;">
+            <span style="font-size:0.70rem;">Continuous Hue Rotation</span>
+            <span id="pcaHueAngleLabel" style="font-size:0.70rem; font-family:monospace;">0°</span>
+          </div>
+          <input type="range" id="pcaHueSlider" min="0" max="360" step="1" value="0" oninput="onPcaHueSlider(this.value)">
+        </div>
+      </div>
+
+      <div class="meta-row" style="margin-top:4px;">
+        <span>Direct Grayscale Channel View:</span>
+      </div>
       <div class="btn-row">
         <button class="btn" id="chBtn0" onclick="setNcaChannel(0)" title="Channel 0 (Direct raw magnitude)">Ch 0</button>
         <button class="btn" id="chBtn1" onclick="setNcaChannel(1)" title="Channel 1 (Direct raw magnitude)">Ch 1</button>
@@ -1289,7 +1382,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 
       <div class="meta-row">
         <span>Direct View:</span>
-        <span id="channelViewDesc">Grayscale activation magnitude (No Color Correction)</span>
+        <span id="channelViewDesc">Color corrected composite (Purple/Green)</span>
       </div>
     </div>
 
@@ -1297,14 +1390,14 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     <div class="section">
       <div class="section-head">
         <span class="section-title">Decay Persistence</span>
-        <span id="decayVal" class="val">0.9950</span>
+        <span id="decayVal" class="val">0.9700</span>
       </div>
-      <input type="range" id="decaySlider" min="0.8000" max="0.9995" step="0.0005" value="0.9950">
+      <input type="range" id="decaySlider" min="0.8000" max="0.9995" step="0.0005" value="0.9700">
       <div class="btn-row">
-        <button class="btn" onclick="setDecay(0.9200)">Fast</button>
-        <button class="btn" onclick="setDecay(0.9700)">Medium</button>
-        <button class="btn active" id="decayDefBtn" onclick="setDecay(0.9950)">Default</button>
-        <button class="btn" onclick="setDecay(0.9990)">Long Glow</button>
+        <button class="btn" id="decayFastBtn" onclick="setDecay(0.9200)">Fast</button>
+        <button class="btn active" id="decayMedBtn" onclick="setDecay(0.9700)">Medium</button>
+        <button class="btn" id="decayDefBtn" onclick="setDecay(0.9950)">Default</button>
+        <button class="btn" id="decayLongBtn" onclick="setDecay(0.9990)">Long Glow</button>
       </div>
     </div>
 
@@ -1350,11 +1443,11 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     <div class="section">
       <div class="section-head">
         <span class="section-title">Simulation Resolution</span>
-        <span id="simResBadge" class="val">267 × 200 (1:3)</span>
+        <span id="simResBadge" class="val">800 × 600 (1:1)</span>
       </div>
 
       <div style="display:flex; justify-content:space-between; align-items:center;">
-        <span id="simInfoLabel" class="meta-row" style="margin:0;">53.4k cells &bull; Relative 1:3</span>
+        <span id="simInfoLabel" class="meta-row" style="margin:0;">480.0k cells &bull; Relative 1:1</span>
         <span id="dimStatusLabel" class="meta-row" style="margin:0; color:var(--accent-cyan); font-weight:600;">Active (100% Energy)</span>
       </div>
 
@@ -1362,10 +1455,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
         <div class="meta-row"><span>Relative Scale Presets (Screen Proportional)</span></div>
         <div class="btn-row" style="flex-wrap:wrap;">
-          <button class="btn" id="presetBtn1_1" onclick="setSimPreset('1:1')" title="1:1 Full Native Screen Resolution">1:1 Native</button>
+          <button class="btn active" id="presetBtn1_1" onclick="setSimPreset('1:1')" title="1:1 Full Native Screen Resolution">1:1 Native</button>
           <button class="btn" id="presetBtn2_3" onclick="setSimPreset('1:1.5')" title="2:3 Scale (~533x400)">2:3 (1:1.5)</button>
           <button class="btn" id="presetBtn1_2" onclick="setSimPreset('1:2')" title="1:2 Half Resolution (400x300)">1:2 Half</button>
-          <button class="btn active" id="presetBtn1_3" onclick="setSimPreset('1:3')" title="1:3 Original Resolution (267x200)">1:3 Default</button>
+          <button class="btn" id="presetBtn1_3" onclick="setSimPreset('1:3')" title="1:3 Resolution (267x200)">1:3 (267×200)</button>
           <button class="btn" id="presetBtn1_4" onclick="setSimPreset('1:4')" title="1:4 Quarter Resolution (200x150)">1:4 Quarter</button>
           <button class="btn" id="presetBtn1_6" onclick="setSimPreset('1:6')" title="1:6 Sixth Resolution (133x100)">1:6 Sixth</button>
         </div>
@@ -1386,8 +1479,8 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 
       <!-- Continuous Scale Slider -->
       <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
-        <div class="meta-row"><span>Custom Scale Factor</span><span id="simScaleVal">0.33x (267×200)</span></div>
-        <input type="range" id="simScaleSlider" min="0.15" max="1.50" step="0.01" value="0.33">
+        <div class="meta-row"><span>Custom Scale Factor</span><span id="simScaleVal">1.00x (800×600)</span></div>
+        <input type="range" id="simScaleSlider" min="0.15" max="1.50" step="0.01" value="1.00">
       </div>
 
       <!-- Zero-Artifact Filter Mode -->
@@ -1439,36 +1532,37 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
   <script>
     let state = {
       scanning_speed: 0.40,
-      decay_time: 0.9950,
-      freq_min: 100,
-      freq_max: 10000,
+      decay_time: 0.9700,
+      freq_min: 60,
+      freq_max: 4000,
       scale: "log",
       scale_type: 0,
-      auto_speed: false,
+      auto_speed: true,
       rhythm_division: 2,
       detected_bpm: 120.0,
-      auto_freq: false,
+      auto_freq: true,
       auto_gain: 1.0,
       spectrogram_influence: 1.0,
-      nca_topology: 0.0,
-      topology: "cartesian",
-      nca_pole_radial: 1.0,
+      nca_topology: 1.0,
+      topology: "polar",
+      nca_pole_radial: -1.0,
       nca_pole_azimuthal: 1.0,
-      reverse_pole: false,
+      reverse_pole: true,
       reverse_spin: false,
       nca_step_scale: 1.0,
-      sim_width: 267,
-      sim_height: 200,
+      sim_width: 800,
+      sim_height: 600,
       sim_scale_mode: 0,
-      sim_scale: 0.333333,
-      sim_preset: "1:3",
+      sim_scale: 1.0,
+      sim_preset: "1:1",
       sim_filtering: 0,
       nca_perturb: 0.0,
       nca_seed: 0.0,
-      waveform_mode: 0,
       nca_channel_view: -1,
-      nca_auto_cycle: false,
-      nca_cycle_interval: 1.5
+      custom_channel_r: 0,
+      custom_channel_g: 1,
+      custom_channel_b: 2,
+      pca_hue_shift: 0.0
     };
 
     const connDot = document.getElementById('connDot');
@@ -1508,11 +1602,28 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     let pendingUpdate = false;
 
     function updateUI(s) {
-      speedVal.innerText = Number(s.scanning_speed).toFixed(2) + ' rev/s';
-      decayVal.innerText = Number(s.decay_time).toFixed(4);
-      minFreqVal.innerText = Math.round(s.freq_min) + ' Hz';
-      maxFreqVal.innerText = Math.round(s.freq_max) + ' Hz';
-      freqRangeVal.innerText = Math.round(s.freq_min) + ' - ' + Math.round(s.freq_max) + ' Hz';
+      if (s.scanning_speed !== undefined) {
+        speedVal.innerText = Number(s.scanning_speed).toFixed(2) + ' rev/s';
+        if (speedSlider && !speedSlider.matches(':active')) {
+          speedSlider.value = s.scanning_speed;
+        }
+      }
+      if (s.decay_time !== undefined) {
+        const dt = Number(s.decay_time);
+        decayVal.innerText = dt.toFixed(4);
+        if (decaySlider && !decaySlider.matches(':active')) {
+          decaySlider.value = dt;
+        }
+        document.getElementById('decayFastBtn')?.classList.toggle('active', Math.abs(dt - 0.9200) < 0.005);
+        document.getElementById('decayMedBtn')?.classList.toggle('active', Math.abs(dt - 0.9700) < 0.005);
+        document.getElementById('decayDefBtn')?.classList.toggle('active', Math.abs(dt - 0.9950) < 0.002);
+        document.getElementById('decayLongBtn')?.classList.toggle('active', Math.abs(dt - 0.9990) < 0.002);
+      }
+      if (s.freq_min !== undefined) minFreqVal.innerText = Math.round(s.freq_min) + ' Hz';
+      if (s.freq_max !== undefined) maxFreqVal.innerText = Math.round(s.freq_max) + ' Hz';
+      if (s.freq_min !== undefined && s.freq_max !== undefined) {
+        freqRangeVal.innerText = Math.round(s.freq_min) + ' - ' + Math.round(s.freq_max) + ' Hz';
+      }
 
       // Spectrogram influence & scanning line visibility
       if (s.spectrogram_influence !== undefined) {
@@ -1532,13 +1643,17 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         document.getElementById('specBtn150')?.classList.toggle('active', Math.abs(inf - 1.5) < 0.05);
       }
 
-      ncaStepVal.innerText = Number(s.nca_step_scale || 1.0).toFixed(2) + 'x';
+      if (s.nca_step_scale !== undefined) {
+        ncaStepVal.innerText = Number(s.nca_step_scale).toFixed(2) + 'x';
+      }
 
       // Topology
-      const topVal = parseFloat(s.nca_topology || 0.0);
-      topologySlider.value = topVal;
-      const revPole = !!s.reverse_pole || (s.nca_pole_radial < 0);
-      const revSpin = !!s.reverse_spin || (s.nca_pole_azimuthal < 0);
+      const topVal = parseFloat(s.nca_topology !== undefined ? s.nca_topology : 1.0);
+      if (topologySlider && !topologySlider.matches(':active')) {
+        topologySlider.value = topVal;
+      }
+      const revPole = (s.reverse_pole !== undefined) ? !!s.reverse_pole : (s.nca_pole_radial < 0);
+      const revSpin = (s.reverse_spin !== undefined) ? !!s.reverse_spin : (s.nca_pole_azimuthal < 0);
 
       if (topVal <= 0.05) {
         topologyLabel.innerText = 'Cartesian (0.0)';
@@ -1551,22 +1666,26 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         topologyDesc.innerText = 'Rotated Sobel Field (' + Math.round(topVal * 90) + '°)';
       }
 
-      document.getElementById('topoBtnCart').classList.toggle('active', topVal <= 0.1);
-      document.getElementById('topoBtnSpiral').classList.toggle('active', topVal > 0.1 && topVal < 0.9);
-      document.getElementById('topoBtnPolar').classList.toggle('active', topVal >= 0.9);
+      document.getElementById('topoBtnCart')?.classList.toggle('active', topVal <= 0.1);
+      document.getElementById('topoBtnSpiral')?.classList.toggle('active', topVal > 0.1 && topVal < 0.9);
+      document.getElementById('topoBtnPolar')?.classList.toggle('active', topVal >= 0.9);
 
-      reversePoleBtn.innerText = revPole ? '🔄 Reverse Pole: Inward' : '🔄 Reverse Pole: Outward';
-      reversePoleBtn.classList.toggle('active', revPole);
+      if (reversePoleBtn) {
+        reversePoleBtn.innerText = revPole ? '🔄 Reverse Pole: Inward' : '🔄 Reverse Pole: Outward';
+        reversePoleBtn.classList.toggle('active', revPole);
+      }
 
-      reverseSpinBtn.innerText = revSpin ? '🔃 Spin: CW (Rev)' : '🔃 Spin: CCW';
-      reverseSpinBtn.classList.toggle('active', revSpin);
+      if (reverseSpinBtn) {
+        reverseSpinBtn.innerText = revSpin ? '🔃 Spin: CW (Rev)' : '🔃 Spin: CCW';
+        reverseSpinBtn.classList.toggle('active', revSpin);
+      }
 
       // Simulation Resolution UI
-      const sw = s.sim_width || 267;
-      const sh = s.sim_height || 200;
+      const sw = s.sim_width || 800;
+      const sh = s.sim_height || 600;
       const totalCells = (sw * sh) >= 1000 ? ((sw * sh) / 1000).toFixed(1) + 'k' : (sw * sh);
       const isRelative = (s.sim_scale_mode === 0);
-      const presetName = s.sim_preset || (isRelative ? '1:3' : (sw + 'x' + sh));
+      const presetName = s.sim_preset || (isRelative ? (sw === 800 && sh === 600 ? '1:1' : '1:3') : (sw + 'x' + sh));
       
       if (simResBadge) {
         simResBadge.innerText = `${sw} × ${sh} (${presetName})`;
@@ -1575,7 +1694,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         simInfoLabel.innerText = `${totalCells} cells • ${isRelative ? 'Relative ' + presetName : 'Fixed Grid'}`;
       }
       if (simScaleVal) {
-        const sc = s.sim_scale !== undefined ? parseFloat(s.sim_scale) : 0.33;
+        const sc = s.sim_scale !== undefined ? parseFloat(s.sim_scale) : 1.0;
         simScaleVal.innerText = `${sc.toFixed(2)}x (${sw}×${sh})`;
         if (simScaleSlider && !simScaleSlider.matches(':active')) {
           simScaleSlider.value = sc;
@@ -1620,16 +1739,16 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 
       const curScale = s.scale || (s.scale_type === 1 ? 'mel' : s.scale_type === 2 ? 'linear' : 'log');
       scaleLabel.innerText = curScale === 'mel' ? 'Mel' : curScale === 'linear' ? 'Linear' : 'Logarithmic';
-      document.getElementById('scaleBtnLog').classList.toggle('active', curScale === 'log');
-      document.getElementById('scaleBtnMel').classList.toggle('active', curScale === 'mel');
-      document.getElementById('scaleBtnLin').classList.toggle('active', curScale === 'linear');
+      document.getElementById('scaleBtnLog')?.classList.toggle('active', curScale === 'log');
+      document.getElementById('scaleBtnMel')?.classList.toggle('active', curScale === 'mel');
+      document.getElementById('scaleBtnLin')?.classList.toggle('active', curScale === 'linear');
 
       for (let i = 0; i <= 4; i++) {
         const btn = document.getElementById('divBtn' + i);
         if (btn) btn.classList.toggle('active', s.rhythm_division === i);
       }
 
-      // Direct NCA Channel View and Auto-Cycle
+      // Direct NCA Channel View & Custom Channel UI
       if (s.nca_channel_view !== undefined) {
         state.nca_channel_view = parseInt(s.nca_channel_view);
         const ch = state.nca_channel_view;
@@ -1640,43 +1759,59 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
             chLabel.innerText = 'Composite (CC)';
             if (chDesc) chDesc.innerText = 'Color corrected composite (Purple/Green)';
           } else if (ch === 12) {
-            chLabel.innerText = 'Raw RGB (0..2)';
-            if (chDesc) chDesc.innerText = 'Raw RGB channels 0, 1, 2 (No Color Correction)';
+            chLabel.innerText = '3 Channels (RGB)';
+            if (chDesc) chDesc.innerText = 'Direct 3-channel RGB view (No Color Correction)';
           } else if (ch === 13) {
             chLabel.innerText = 'PCA RGB (3 PCs)';
-            if (chDesc) chDesc.innerText = 'Top 3 Principal Components mapped to RGB (No Color Correction)';
+            if (chDesc) chDesc.innerText = 'Top 3 Principal Components mapped to RGB (Rotatable Palette)';
           } else {
-            chLabel.innerText = 'Channel ' + ch + ' (Direct)';
+            chLabel.innerText = 'Channel ' + ch + ' (Grayscale)';
             if (chDesc) chDesc.innerText = 'Channel ' + ch + ' magnitude |state| (No Color Correction)';
           }
         }
         document.getElementById('chBtnComp')?.classList.toggle('active', ch === -1);
-        document.getElementById('chBtnRgb')?.classList.toggle('active', ch === 12);
+        document.getElementById('chBtnCustom')?.classList.toggle('active', ch === 12);
         document.getElementById('chBtnPca')?.classList.toggle('active', ch === 13);
         for (let c = 0; c < 12; c++) {
           document.getElementById('chBtn' + c)?.classList.toggle('active', ch === c);
         }
       }
 
-      if (s.nca_auto_cycle !== undefined) {
-        state.nca_auto_cycle = !!s.nca_auto_cycle;
-        const autoBtn = document.getElementById('autoCycleChannelsBtn');
-        if (autoBtn) {
-          autoBtn.classList.toggle('active', state.nca_auto_cycle);
-          autoBtn.innerText = state.nca_auto_cycle ? '🔄 Cycling (ON)' : '🔄 Auto-Cycle Channels';
-        }
+      // Sync custom channels selectors
+      if (s.custom_channel_r !== undefined) {
+        state.custom_channel_r = parseInt(s.custom_channel_r);
+        const el = document.getElementById('selChR');
+        if (el && !el.matches(':active')) el.value = state.custom_channel_r;
+      }
+      if (s.custom_channel_g !== undefined) {
+        state.custom_channel_g = parseInt(s.custom_channel_g);
+        const el = document.getElementById('selChG');
+        if (el && !el.matches(':active')) el.value = state.custom_channel_g;
+      }
+      if (s.custom_channel_b !== undefined) {
+        state.custom_channel_b = parseInt(s.custom_channel_b);
+        const el = document.getElementById('selChB');
+        if (el && !el.matches(':active')) el.value = state.custom_channel_b;
+      }
+      const customDesc = document.getElementById('customChannelsDesc');
+      if (customDesc) {
+        const cr = state.custom_channel_r !== undefined ? state.custom_channel_r : 0;
+        const cg = state.custom_channel_g !== undefined ? state.custom_channel_g : 1;
+        const cb = state.custom_channel_b !== undefined ? state.custom_channel_b : 2;
+        customDesc.innerText = `R: Ch ${cr} | G: Ch ${cg} | B: Ch ${cb}`;
       }
 
-      if (s.nca_cycle_interval !== undefined) {
-        state.nca_cycle_interval = parseFloat(s.nca_cycle_interval);
-        const intervalVal = document.getElementById('cycleIntervalVal');
-        if (intervalVal) {
-          intervalVal.innerText = state.nca_cycle_interval.toFixed(1) + 's';
-        }
-        const intervalSlider = document.getElementById('cycleIntervalSlider');
-        if (intervalSlider && !intervalSlider.matches(':active')) {
-          intervalSlider.value = state.nca_cycle_interval;
-        }
+      // Sync PCA Hue
+      if (s.pca_hue_shift !== undefined) {
+        state.pca_hue_shift = parseFloat(s.pca_hue_shift);
+        let deg = Math.round((state.pca_hue_shift * 180.0 / Math.PI)) % 360;
+        if (deg < 0) deg += 360;
+        const slider = document.getElementById('pcaHueSlider');
+        if (slider && !slider.matches(':active')) slider.value = deg;
+        const lbl = document.getElementById('pcaHueAngleLabel');
+        if (lbl) lbl.innerText = deg + '°';
+        const valTxt = document.getElementById('pcaHueVal');
+        if (valTxt) valTxt.innerText = deg + '° (' + state.pca_hue_shift.toFixed(2) + ' rad)';
       }
     }
 
@@ -1688,9 +1823,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       freqMaxSlider.value = state.freq_max;
       topologySlider.value = state.nca_topology;
       ncaStepSlider.value = state.nca_step_scale;
-      if (simScaleSlider) simScaleSlider.value = state.sim_scale || 0.33;
-      const cycleSlider = document.getElementById('cycleIntervalSlider');
-      if (cycleSlider) cycleSlider.value = state.nca_cycle_interval || 1.5;
+      if (simScaleSlider) simScaleSlider.value = state.sim_scale || 1.0;
       updateUI(state);
     }
 
@@ -1721,8 +1854,10 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           nca_perturb: parseFloat(state.nca_perturb || 0.0),
           nca_seed: parseFloat(state.nca_seed || 0.0),
           nca_channel_view: parseInt(state.nca_channel_view !== undefined ? state.nca_channel_view : -1),
-          nca_auto_cycle: !!state.nca_auto_cycle,
-          nca_cycle_interval: parseFloat(state.nca_cycle_interval || 1.5)
+          custom_channel_r: parseInt(state.custom_channel_r !== undefined ? state.custom_channel_r : 0),
+          custom_channel_g: parseInt(state.custom_channel_g !== undefined ? state.custom_channel_g : 1),
+          custom_channel_b: parseInt(state.custom_channel_b !== undefined ? state.custom_channel_b : 2),
+          pca_hue_shift: parseFloat(state.pca_hue_shift || 0.0)
         };
         const res = await fetch('/api/controls', {
           method: 'POST',
@@ -1743,7 +1878,6 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           pendingUpdate = false;
           sendControls();
         }
-      }
     }
 
     async function multiplySpeed(factor) {
@@ -1884,22 +2018,48 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       sendControls();
     }
 
-    // --- Direct NCA Channel View & Auto-Cycling Actions ---
+    // --- Direct NCA Channel View & Custom Channel Actions ---
     async function setNcaChannel(ch) {
       state.nca_channel_view = parseInt(ch);
-      state.nca_auto_cycle = false;
-      const autoBtn = document.getElementById('autoCycleChannelsBtn');
-      if (autoBtn) {
-        autoBtn.classList.remove('active');
-        autoBtn.innerText = '🔄 Auto-Cycle Channels';
+      const payload = { channel: state.nca_channel_view };
+      if (state.nca_channel_view === 12) {
+        payload.custom_r = parseInt(document.getElementById('selChR')?.value || 0);
+        payload.custom_g = parseInt(document.getElementById('selChG')?.value || 1);
+        payload.custom_b = parseInt(document.getElementById('selChB')?.value || 2);
       }
       try {
         const res = await fetch('/api/channel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {
+        sendControls();
+      }
+    }
+
+    async function updateCustomChannels() {
+      const r = parseInt(document.getElementById('selChR').value);
+      const g = parseInt(document.getElementById('selChG').value);
+      const b = parseInt(document.getElementById('selChB').value);
+      state.custom_channel_r = r;
+      state.custom_channel_g = g;
+      state.custom_channel_b = b;
+      state.nca_channel_view = 12;
+      try {
+        const res = await fetch('/api/channel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            channel: state.nca_channel_view,
-            auto_cycle: false
+            channel: 12,
+            custom_r: r,
+            custom_g: g,
+            custom_b: b
           })
         });
         if (res.ok) {
@@ -1912,37 +2072,55 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       }
     }
 
-    async function toggleAutoCycleChannels() {
-      const nextVal = !state.nca_auto_cycle;
-      state.nca_auto_cycle = nextVal;
-      if (nextVal && state.nca_channel_view < 0) {
-        state.nca_channel_view = 0;
-      }
+    // --- PCA Palette Actions ---
+    async function rerollPcaPalette() {
       try {
-        const res = await fetch('/api/channel', {
+        const res = await fetch('/api/pca/palette', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            auto_cycle: nextVal,
-            channel: state.nca_channel_view,
-            cycle_interval: parseFloat(state.nca_cycle_interval || 1.5)
-          })
+          body: JSON.stringify({ reroll: true })
         });
         if (res.ok) {
           const data = await res.json();
           Object.assign(state, data);
           updateUI(state);
         }
-      } catch (e) {
-        sendControls();
-      }
+      } catch (e) {}
     }
 
-    function setCycleInterval(val) {
-      state.nca_cycle_interval = parseFloat(val);
-      const label = document.getElementById('cycleIntervalVal');
-      if (label) label.innerText = parseFloat(val).toFixed(1) + 's';
-      sendControls();
+    async function shiftPcaPalette(deltaRad) {
+      try {
+        const res = await fetch('/api/pca/palette', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shift: deltaRad })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+          updateUI(state);
+        }
+      } catch (e) {}
+    }
+
+    async function onPcaHueSlider(valDeg) {
+      const rad = (parseFloat(valDeg) * Math.PI) / 180.0;
+      state.pca_hue_shift = rad;
+      const degLabel = document.getElementById('pcaHueAngleLabel');
+      if (degLabel) degLabel.innerText = Math.round(valDeg) + '°';
+      const valText = document.getElementById('pcaHueVal');
+      if (valText) valText.innerText = Math.round(valDeg) + '° (' + rad.toFixed(2) + ' rad)';
+      try {
+        const res = await fetch('/api/pca/palette', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hue: rad })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(state, data);
+        }
+      } catch (e) {}
     }
 
     // --- Simulation Resolution Actions ---
