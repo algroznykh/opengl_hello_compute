@@ -72,32 +72,26 @@ struct RadarConfig {
     std::atomic<bool> ncaAutoCycleChannels{false};
     std::atomic<float> ncaCycleInterval{1.5f};
 
-    // Human-Assisted Genetic Algorithm state
-    std::atomic<int> ncaGeneration{0};
-    std::atomic<bool> ncaHasCandidate{false};
-    std::atomic<int> ncaMutatedCount{0};
-    std::atomic<float> ncaMutationScale{0.15f};
-    std::atomic<float> ncaMutationRate{0.25f};
-    std::atomic<int> ncaRerollCount{0};
-    std::atomic<bool> ncaLastAutoRerolled{false};
-    std::atomic<bool> ncaAutoRerollEnabled{true};
-    std::atomic<bool> ncaDimOnReroll{true};
+    // Simulation Resolution configuration
+    std::atomic<int> simWidth{267};
+    std::atomic<int> simHeight{200};
+    std::atomic<int> simScaleMode{0};    // 0 = Relative, 1 = Fixed
+    std::atomic<float> simScale{0.333333f};
+    std::atomic<int> simFiltering{0};    // 0 = Smooth Hermite, 1 = Bilinear, 2 = Nearest
     std::atomic<float> ncaViewportDim{1.0f};
-    std::atomic<bool> ncaEasedCriteria{true};
-    std::atomic<int> ncaRerollGraceFrames{45};
+    std::atomic<bool> simResPending{false};
+    std::mutex simResMutex;
 
-    // Neural Wiring linkage ("fires together, wires together")
-    std::atomic<int> ncaWiringLinks{0};
-    std::atomic<int> ncaWiringEvents{0};
-    std::atomic<float> ncaMaxWiringStrength{0.0f};
-
-    // Action triggers for Genetic Algorithm
-    std::atomic<bool> geneticActionPending{false};
-    std::mutex geneticMutex;
-    std::string pendingGeneticAction;
-    std::string pendingGeneticTarget{"all"};
-    float pendingGeneticScale{0.15f};
-    float pendingGeneticRate{0.25f};
+    struct SimResolutionRequest {
+        int width{267};
+        int height{200};
+        int scaleMode{0};
+        float scale{0.333333f};
+        std::string preset{"1:3"};
+        bool resample{true};
+    };
+    SimResolutionRequest pendingSimRes;
+    std::string simPresetName{"1:3"};
 
     // Action triggers for Structure Imprint Easter Egg
     std::atomic<bool> hasPendingImprint{false};
@@ -110,21 +104,34 @@ struct RadarConfig {
         hasPendingImprint.store(true);
     }
 
-    void requestGenetic(const std::string& action, const std::string& target, float scale, float rate) {
-        std::lock_guard<std::mutex> lock(geneticMutex);
-        pendingGeneticAction = action;
-        pendingGeneticTarget = target;
-        pendingGeneticScale = scale;
-        pendingGeneticRate = rate;
-        geneticActionPending.store(true);
+    void requestSimulationResolution(int w, int h, int mode, float scale, const std::string& preset, bool resample = true) {
+        std::lock_guard<std::mutex> lock(simResMutex);
+        pendingSimRes.width = w;
+        pendingSimRes.height = h;
+        pendingSimRes.scaleMode = mode;
+        pendingSimRes.scale = scale;
+        pendingSimRes.preset = preset;
+        pendingSimRes.resample = resample;
+        simPresetName = preset;
+        simWidth.store(w);
+        simHeight.store(h);
+        simScaleMode.store(mode);
+        simScale.store(scale);
+        simResPending.store(true);
     }
 
-    struct GeneticRequest {
-        std::string action;
-        std::string target{"all"};
-        float scale{0.15f};
-        float rate{0.25f};
-    };
+    bool hasPendingSimulationResolution() const {
+        return simResPending.load();
+    }
+
+    bool popPendingSimulationResolution(SimResolutionRequest& req) {
+        if (!simResPending.load()) return false;
+        std::lock_guard<std::mutex> lock(simResMutex);
+        if (!simResPending.load()) return false;
+        req = pendingSimRes;
+        simResPending.store(false);
+        return true;
+    }
 
     bool popPendingImprint(std::string& outMsg) {
         if (!hasPendingImprint.load()) return false;
@@ -132,18 +139,6 @@ struct RadarConfig {
         if (!hasPendingImprint.load()) return false;
         outMsg = pendingImprintMessage;
         hasPendingImprint.store(false);
-        return true;
-    }
-
-    bool popPendingGenetic(GeneticRequest& req) {
-        if (!geneticActionPending.load()) return false;
-        std::lock_guard<std::mutex> lock(geneticMutex);
-        if (!geneticActionPending.load()) return false;
-        req.action = pendingGeneticAction;
-        req.target = pendingGeneticTarget;
-        req.scale = pendingGeneticScale;
-        req.rate = pendingGeneticRate;
-        geneticActionPending.store(false);
         return true;
     }
 
@@ -204,21 +199,13 @@ struct RadarConfig {
         ss << "  \"nca_channel_view\": " << ncaChannelView.load() << ",\n";
         ss << "  \"nca_auto_cycle\": " << (ncaAutoCycleChannels.load() ? "true" : "false") << ",\n";
         ss << "  \"nca_cycle_interval\": " << ncaCycleInterval.load() << ",\n";
-        ss << "  \"genetic_generation\": " << ncaGeneration.load() << ",\n";
-        ss << "  \"genetic_has_candidate\": " << (ncaHasCandidate.load() ? "true" : "false") << ",\n";
-        ss << "  \"genetic_mutated_count\": " << ncaMutatedCount.load() << ",\n";
-        ss << "  \"genetic_mutation_scale\": " << ncaMutationScale.load() << ",\n";
-        ss << "  \"genetic_mutation_rate\": " << ncaMutationRate.load() << ",\n";
-        ss << "  \"nca_rerolls\": " << ncaRerollCount.load() << ",\n";
-        ss << "  \"nca_last_auto_rerolled\": " << (ncaLastAutoRerolled.load() ? "true" : "false") << ",\n";
-        ss << "  \"nca_auto_reroll\": " << (ncaAutoRerollEnabled.load() ? "true" : "false") << ",\n";
-        ss << "  \"nca_dim_on_reroll\": " << (ncaDimOnReroll.load() ? "true" : "false") << ",\n";
+        ss << "  \"sim_width\": " << simWidth.load() << ",\n";
+        ss << "  \"sim_height\": " << simHeight.load() << ",\n";
+        ss << "  \"sim_scale_mode\": " << simScaleMode.load() << ",\n";
+        ss << "  \"sim_scale\": " << simScale.load() << ",\n";
+        ss << "  \"sim_preset\": \"" << simPresetName << "\",\n";
+        ss << "  \"sim_filtering\": " << simFiltering.load() << ",\n";
         ss << "  \"nca_viewport_dim\": " << ncaViewportDim.load() << ",\n";
-        ss << "  \"nca_eased_criteria\": " << (ncaEasedCriteria.load() ? "true" : "false") << ",\n";
-        ss << "  \"nca_reroll_grace_frames\": " << ncaRerollGraceFrames.load() << ",\n";
-        ss << "  \"nca_wiring_links\": " << ncaWiringLinks.load() << ",\n";
-        ss << "  \"nca_wiring_events\": " << ncaWiringEvents.load() << ",\n";
-        ss << "  \"nca_max_wiring_strength\": " << ncaMaxWiringStrength.load() << ",\n";
         ss << "  \"fps\": " << currentFps.load() << ",\n";
         ss << "  \"frame\": " << frameCount.load() << "\n";
         ss << "}";
@@ -496,28 +483,80 @@ private:
             return;
         }
 
-        // Human-Assisted Genetic Algorithm endpoint
-        if (cleanPath == "/api/genetic") {
+        // Simulation Resolution endpoint
+        if (cleanPath == "/api/resolution" || cleanPath == "/api/genetic") {
             if (method == "POST") {
                 size_t bodyPos = request.find("\r\n\r\n");
                 std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
-                std::string action = "mutate";
-                std::string target = "all";
-                float scale = 0.15f;
-                float rate = 0.25f;
-                extractJsonString(body, "action", action);
-                extractJsonString(body, "target", target);
-                extractJsonFloat(body, "scale", scale);
-                extractJsonFloat(body, "rate", rate);
+                
+                int w = m_config.simWidth.load();
+                int h = m_config.simHeight.load();
+                int mode = m_config.simScaleMode.load();
+                float scale = m_config.simScale.load();
+                int filtering = m_config.simFiltering.load();
+                bool resample = true;
+                std::string preset = "";
 
-                if (action == "mutate_everything" || action == "everything" || target == "everything") {
-                    action = "mutate";
-                    target = "everything";
-                    rate = 1.0f;
+                extractJsonString(body, "preset", preset);
+                extractJsonInt(body, "width", w) || extractJsonInt(body, "w", w) || extractJsonInt(body, "sim_width", w);
+                extractJsonInt(body, "height", h) || extractJsonInt(body, "h", h) || extractJsonInt(body, "sim_height", h);
+                extractJsonFloat(body, "scale", scale) || extractJsonFloat(body, "sim_scale", scale);
+                extractJsonInt(body, "scale_mode", mode) || extractJsonInt(body, "mode", mode) || extractJsonInt(body, "sim_scale_mode", mode);
+                extractJsonInt(body, "filtering", filtering) || extractJsonInt(body, "sim_filtering", filtering);
+                extractJsonBool(body, "resample", resample);
+
+                if (filtering >= 0 && filtering <= 2) {
+                    m_config.simFiltering.store(filtering);
                 }
 
-                m_config.requestGenetic(action, target, scale, rate);
-                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                if (!preset.empty()) {
+                    if (preset == "native" || preset == "1:1") {
+                        mode = 0; scale = 1.0f; w = 800; h = 600;
+                    } else if (preset == "1:1.5" || preset == "2:3" || preset == "533x400") {
+                        mode = 0; scale = 0.666667f; w = 533; h = 400;
+                    } else if (preset == "half" || preset == "1:2" || preset == "400x300") {
+                        mode = 0; scale = 0.5f; w = 400; h = 300;
+                    } else if (preset == "original" || preset == "1:3" || preset == "default" || preset == "267x200") {
+                        mode = 0; scale = 0.333333f; w = 267; h = 200;
+                    } else if (preset == "quarter" || preset == "1:4" || preset == "200x150") {
+                        mode = 0; scale = 0.25f; w = 200; h = 150;
+                    } else if (preset == "sixth" || preset == "1:6" || preset == "133x100") {
+                        mode = 0; scale = 0.166667f; w = 133; h = 100;
+                    } else if (preset == "160x120") {
+                        mode = 1; w = 160; h = 120;
+                    } else if (preset == "200x150") {
+                        mode = 1; w = 200; h = 150;
+                    } else if (preset == "320x240") {
+                        mode = 1; w = 320; h = 240;
+                    } else if (preset == "400x300") {
+                        mode = 1; w = 400; h = 300;
+                    } else if (preset == "512x384") {
+                        mode = 1; w = 512; h = 384;
+                    } else if (preset == "640x480") {
+                        mode = 1; w = 640; h = 480;
+                    } else if (preset == "800x600") {
+                        mode = 1; w = 800; h = 600;
+                    }
+                } else if (scale > 0.05f && scale <= 3.0f && (w == m_config.simWidth.load() && h == m_config.simHeight.load())) {
+                    w = std::max(32, (int)std::round(800.0f * scale));
+                    h = std::max(24, (int)std::round(600.0f * scale));
+                    mode = 0;
+                    std::ostringstream ssPreset;
+                    ssPreset << std::fixed << std::setprecision(2) << scale << "x";
+                    preset = ssPreset.str();
+                }
+
+                if (preset.empty()) {
+                    preset = std::to_string(w) + "x" + std::to_string(h);
+                }
+
+                m_config.simScaleMode.store(mode);
+                m_config.simScale.store(scale);
+                m_config.requestSimulationResolution(w, h, mode, scale, preset, resample);
+                for (int waitIter = 0; waitIter < 30; waitIter++) {
+                    if (!m_config.hasPendingSimulationResolution() && m_config.simWidth.load() == w) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
             }
             std::string resBody = m_config.toJson();
             std::ostringstream response;
@@ -667,28 +706,8 @@ private:
             return;
         }
 
-        // Re-roll settings endpoint
+        // Re-roll settings endpoint (kept for backwards compatibility)
         if (cleanPath == "/api/reroll") {
-            if (method == "POST") {
-                size_t bodyPos = request.find("\r\n\r\n");
-                std::string body = (bodyPos != std::string::npos) ? request.substr(bodyPos + 4) : "";
-                bool boolVal;
-                int intVal;
-                if (extractJsonBool(body, "dim_on_reroll", boolVal) || extractJsonBool(body, "nca_dim_on_reroll", boolVal) || extractJsonBool(body, "dim", boolVal)) {
-                    m_config.ncaDimOnReroll.store(boolVal);
-                }
-                if (extractJsonBool(body, "eased_criteria", boolVal) || extractJsonBool(body, "nca_eased_criteria", boolVal) || extractJsonBool(body, "eased", boolVal)) {
-                    m_config.ncaEasedCriteria.store(boolVal);
-                }
-                if (extractJsonBool(body, "auto_reroll", boolVal) || extractJsonBool(body, "nca_auto_reroll", boolVal)) {
-                    m_config.ncaAutoRerollEnabled.store(boolVal);
-                }
-                if (extractJsonInt(body, "reroll_grace_frames", intVal) || extractJsonInt(body, "grace_frames", intVal)) {
-                    if (intVal >= 5 && intVal <= 300) {
-                        m_config.ncaRerollGraceFrames.store(intVal);
-                    }
-                }
-            }
             std::string resBody = m_config.toJson();
             std::ostringstream response;
             response << "HTTP/1.1 200 OK\r\n"
@@ -828,20 +847,66 @@ private:
                 m_config.ncaPoleAzimuthal.store(val);
                 m_config.ncaReverseSpin.store(val < 0.0f);
             }
-            if (extractJsonString(body, "genetic_action", strVal)) {
-                std::string target = "all";
-                float scale = 0.15f;
-                float rate = 0.25f;
-                extractJsonString(body, "genetic_target", target);
-                extractJsonFloat(body, "genetic_scale", scale);
-                extractJsonFloat(body, "genetic_rate", rate);
-                if (strVal == "mutate_everything" || target == "everything") {
-                    strVal = "mutate";
-                    target = "everything";
-                    rate = 1.0f;
+            std::string presetStr;
+            if (extractJsonString(body, "sim_preset", presetStr) || extractJsonString(body, "preset", presetStr)) {
+                int w = m_config.simWidth.load();
+                int h = m_config.simHeight.load();
+                int mode = m_config.simScaleMode.load();
+                float scale = m_config.simScale.load();
+                if (presetStr == "native" || presetStr == "1:1") {
+                    mode = 0; scale = 1.0f; w = 800; h = 600;
+                } else if (presetStr == "1:1.5" || presetStr == "2:3" || presetStr == "533x400") {
+                    mode = 0; scale = 0.666667f; w = 533; h = 400;
+                } else if (presetStr == "half" || presetStr == "1:2" || presetStr == "400x300") {
+                    mode = 0; scale = 0.5f; w = 400; h = 300;
+                } else if (presetStr == "original" || presetStr == "1:3" || presetStr == "default" || presetStr == "267x200") {
+                    mode = 0; scale = 0.333333f; w = 267; h = 200;
+                } else if (presetStr == "quarter" || presetStr == "1:4" || presetStr == "200x150") {
+                    mode = 0; scale = 0.25f; w = 200; h = 150;
+                } else if (presetStr == "sixth" || presetStr == "1:6" || presetStr == "133x100") {
+                    mode = 0; scale = 0.166667f; w = 133; h = 100;
+                } else if (presetStr == "160x120") {
+                    mode = 1; w = 160; h = 120;
+                } else if (presetStr == "200x150") {
+                    mode = 1; w = 200; h = 150;
+                } else if (presetStr == "320x240") {
+                    mode = 1; w = 320; h = 240;
+                } else if (presetStr == "400x300") {
+                    mode = 1; w = 400; h = 300;
+                } else if (presetStr == "512x384") {
+                    mode = 1; w = 512; h = 384;
+                } else if (presetStr == "640x480") {
+                    mode = 1; w = 640; h = 480;
+                } else if (presetStr == "800x600") {
+                    mode = 1; w = 800; h = 600;
                 }
-                m_config.requestGenetic(strVal, target, scale, rate);
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                m_config.simScaleMode.store(mode);
+                m_config.simScale.store(scale);
+                m_config.requestSimulationResolution(w, h, mode, scale, presetStr, true);
+                for (int waitIter = 0; waitIter < 30; waitIter++) {
+                    if (!m_config.hasPendingSimulationResolution() && m_config.simWidth.load() == w) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            }
+            if (extractJsonFloat(body, "sim_scale", val)) {
+                if (val >= 0.05f && val <= 3.0f) {
+                    int w = std::max(32, (int)std::round(800.0f * val));
+                    int h = std::max(24, (int)std::round(600.0f * val));
+                    std::ostringstream ssPreset;
+                    ssPreset << std::fixed << std::setprecision(2) << val << "x";
+                    m_config.simScaleMode.store(0);
+                    m_config.simScale.store(val);
+                    m_config.requestSimulationResolution(w, h, 0, val, ssPreset.str(), true);
+                    for (int waitIter = 0; waitIter < 30; waitIter++) {
+                        if (!m_config.hasPendingSimulationResolution() && m_config.simWidth.load() == w) break;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    }
+                }
+            }
+            if (extractJsonInt(body, "sim_filtering", intVal)) {
+                if (intVal >= 0 && intVal <= 2) {
+                    m_config.simFiltering.store(intVal);
+                }
             }
 
             if (extractJsonFloat(body, "spectrogram_influence", val) || extractJsonFloat(body, "spectrogram_gain", val) || extractJsonFloat(body, "spectrogram_strength", val)) {
@@ -858,26 +923,12 @@ private:
                     m_config.ncaChannelView.store(intVal);
                 }
             }
-            if (extractJsonBool(body, "nca_auto_reroll", boolVal) || extractJsonBool(body, "auto_reroll", boolVal)) {
-                m_config.ncaAutoRerollEnabled.store(boolVal);
-            }
             if (extractJsonBool(body, "nca_auto_cycle", boolVal) || extractJsonBool(body, "auto_cycle", boolVal)) {
                 m_config.ncaAutoCycleChannels.store(boolVal);
             }
             if (extractJsonFloat(body, "nca_cycle_interval", val) || extractJsonFloat(body, "cycle_interval", val)) {
                 if (val >= 0.1f && val <= 60.0f) {
                     m_config.ncaCycleInterval.store(val);
-                }
-            }
-            if (extractJsonBool(body, "nca_dim_on_reroll", boolVal) || extractJsonBool(body, "dim_on_reroll", boolVal) || extractJsonBool(body, "dim_viewport", boolVal)) {
-                m_config.ncaDimOnReroll.store(boolVal);
-            }
-            if (extractJsonBool(body, "nca_eased_criteria", boolVal) || extractJsonBool(body, "eased_criteria", boolVal) || extractJsonBool(body, "eased", boolVal)) {
-                m_config.ncaEasedCriteria.store(boolVal);
-            }
-            if (extractJsonInt(body, "nca_reroll_grace_frames", intVal) || extractJsonInt(body, "reroll_grace_frames", intVal)) {
-                if (intVal >= 5 && intVal <= 300) {
-                    m_config.ncaRerollGraceFrames.store(intVal);
                 }
             }
 
@@ -1295,84 +1346,63 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       </div>
     </div>
 
-    <!-- Human-Assisted Genetic Evolution with Mutate Everything -->
+    <!-- Simulation Resolution & State Card -->
     <div class="section">
       <div class="section-head">
-        <span class="section-title">Genetic Algorithm</span>
-        <span id="geneticGenLabel" class="val">Gen: 0</span>
+        <span class="section-title">Simulation Resolution</span>
+        <span id="simResBadge" class="val">267 × 200 (1:3)</span>
       </div>
 
       <div style="display:flex; justify-content:space-between; align-items:center;">
-        <span id="candidateBadge" class="badge badge-stable">Baseline Stable</span>
-        <span id="mutatedCountLabel" class="meta-row" style="margin:0;">Mutated: 0 weights</span>
+        <span id="simInfoLabel" class="meta-row" style="margin:0;">53.4k cells &bull; Relative 1:3</span>
+        <span id="dimStatusLabel" class="meta-row" style="margin:0; color:var(--accent-cyan); font-weight:600;">Active (100% Energy)</span>
       </div>
 
-      <!-- Synaptic Wiring Telemetry: parameters that were changed together wire together -->
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
-        <span style="font-size:0.75rem; color:var(--text-dim);">Neural Wiring:</span>
-        <span id="wiringBadge" class="meta-row" style="margin:0; color:var(--accent-cyan); font-weight:600;">0 links (0 wired)</span>
-      </div>
-
-      <!-- Auto-Reroll on Collapse/Explosion Telemetry -->
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
-        <span style="font-size:0.75rem; color:var(--text-dim);">Auto-Reroll Status:</span>
-        <span id="rerollBadge" class="meta-row" style="margin:0; color:var(--accent); font-weight:600;">Active (0 rerolls)</span>
-      </div>
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
-        <span style="font-size:0.75rem; color:var(--text-dim);">State Dimming:</span>
-        <span id="dimStatusLabel" class="meta-row" style="margin:0; color:var(--accent-cyan); font-weight:600;">Active (100% Scale)</span>
-      </div>
-
-      <!-- Auto-Reroll & Anti-Flicker Controls: Dim State & Eased Criteria -->
-      <div class="btn-row" style="margin-top:4px; gap:6px;">
-        <button id="dimRerollBtn" class="toggle-btn active" style="flex:1;" onclick="toggleDimOnReroll()" title="Smoothly damp simulation state during candidate re-rolls to physically cool CA dynamics without dimming screen">
-          🌙 Dim State on Re-roll (ON)
-        </button>
-        <button id="criteriaBtn" class="toggle-btn active" style="flex:1;" onclick="toggleRerollCriteria()" title="Toggle between Eased (tolerant, whole-state) and Strict re-roll criteria">
-          🛡️ Criteria: Eased
-        </button>
-      </div>
-
-      <!-- Target subsystem selector -->
-      <div style="display:flex; flex-direction:column; gap:3px;">
-        <div class="meta-row"><span>Target Subsystem</span><span id="targetNameLabel">All (588)</span></div>
+      <!-- Relative Scale Presets (Screen Proportional) -->
+      <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
+        <div class="meta-row"><span>Relative Scale Presets (Screen Proportional)</span></div>
         <div class="btn-row" style="flex-wrap:wrap;">
-          <button class="btn active" id="targetBtnAll" onclick="setGeneticTarget('all')">All</button>
-          <button class="btn" id="targetBtnPercep" onclick="setGeneticTarget('perception')">Perception</button>
-          <button class="btn" id="targetBtnState" onclick="setGeneticTarget('state')">State</button>
-          <button class="btn" id="targetBtnNonlin" onclick="setGeneticTarget('nonlinear')">Nonlinear</button>
-          <button class="btn" id="targetBtnBias" onclick="setGeneticTarget('biases')">Biases</button>
+          <button class="btn" id="presetBtn1_1" onclick="setSimPreset('1:1')" title="1:1 Full Native Screen Resolution">1:1 Native</button>
+          <button class="btn" id="presetBtn2_3" onclick="setSimPreset('1:1.5')" title="2:3 Scale (~533x400)">2:3 (1:1.5)</button>
+          <button class="btn" id="presetBtn1_2" onclick="setSimPreset('1:2')" title="1:2 Half Resolution (400x300)">1:2 Half</button>
+          <button class="btn active" id="presetBtn1_3" onclick="setSimPreset('1:3')" title="1:3 Original Resolution (267x200)">1:3 Default</button>
+          <button class="btn" id="presetBtn1_4" onclick="setSimPreset('1:4')" title="1:4 Quarter Resolution (200x150)">1:4 Quarter</button>
+          <button class="btn" id="presetBtn1_6" onclick="setSimPreset('1:6')" title="1:6 Sixth Resolution (133x100)">1:6 Sixth</button>
         </div>
       </div>
 
-      <!-- Mutation Scale & Rate sliders -->
+      <!-- Fixed Dimensions Presets (Grid Independent of Window Size) -->
       <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
-        <div class="meta-row"><span>Mutation Scale</span><span id="mutScaleVal">0.15</span></div>
-        <input type="range" id="mutScaleSlider" min="0.02" max="0.50" step="0.01" value="0.15">
-      </div>
-      <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;" id="mutRateRow">
-        <div class="meta-row"><span>Mutation Rate</span><span id="mutRateVal">25%</span></div>
-        <input type="range" id="mutRateSlider" min="0.05" max="1.00" step="0.05" value="0.25">
+        <div class="meta-row"><span>Fixed Grid Presets (Window-Independent)</span></div>
+        <div class="btn-row" style="flex-wrap:wrap;">
+          <button class="btn" id="presetBtn160" onclick="setSimPreset('160x120')" title="Fast 160x120 Grid">160×120</button>
+          <button class="btn" id="presetBtn200" onclick="setSimPreset('200x150')" title="Compact 200x150 Grid">200×150</button>
+          <button class="btn" id="presetBtn267" onclick="setSimPreset('267x200')" title="Classic 267x200 Grid">267×200</button>
+          <button class="btn" id="presetBtn320" onclick="setSimPreset('320x240')" title="Smooth 320x240 Grid">320×240</button>
+          <button class="btn" id="presetBtn400" onclick="setSimPreset('400x300')" title="Detailed 400x300 Grid">400×300</button>
+          <button class="btn" id="presetBtn512" onclick="setSimPreset('512x384')" title="High-Density 512x384 Grid">512×384</button>
+        </div>
       </div>
 
-      <!-- Primary Core Command Row: Reset State, Mutate Everything, Reinforce close together -->
+      <!-- Continuous Scale Slider -->
+      <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
+        <div class="meta-row"><span>Custom Scale Factor</span><span id="simScaleVal">0.33x (267×200)</span></div>
+        <input type="range" id="simScaleSlider" min="0.15" max="1.50" step="0.01" value="0.33">
+      </div>
+
+      <!-- Zero-Artifact Filter Mode -->
+      <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
+        <div class="meta-row"><span>Zero-Artifact Resampling Filter</span></div>
+        <div class="btn-row">
+          <button class="btn active" id="filterBtnHermite" onclick="setSimFiltering(0)" title="Continuous C1 Hermite S-Curve (Zero blockiness, crisp organic CA features)">Smooth Hermite</button>
+          <button class="btn" id="filterBtnBilinear" onclick="setSimFiltering(1)" title="Standard bilinear blend">Bilinear</button>
+          <button class="btn" id="filterBtnNearest" onclick="setSimFiltering(2)" title="Clean pixel-art nearest neighbor grid">Nearest Grid</button>
+        </div>
+      </div>
+
+      <!-- State Actions: Reset State -->
       <div class="btn-row" style="margin-top:6px; gap:6px;">
-        <button class="toggle-btn" id="resetStateBtn" style="flex:1.0; border-color:#ff9900; color:#ffaa33; font-weight:700;" onclick="resetSimulationStateBtn()" title="Clear canvas, backbuffer, and re-seed alive center patch">🌀 Reset State</button>
-        <button class="toggle-btn active" style="flex:1.4; border-color:#ffbb00; color:#ffcc33; font-weight:700;" onclick="mutateEverything()" title="Mutate 100% of all weights and biases">💥 Mutate Everything</button>
-        <button class="btn" id="reinforceBtn" style="flex:1.1; border-color:var(--accent); color:var(--accent); font-weight:700;" onclick="reinforceCandidate()" title="Lock-in candidate as next generation and wire changed parameters together">✨ Reinforce</button>
-      </div>
-
-      <!-- Secondary Genetic Actions: Targeted Mutate & Cancel -->
-      <div class="btn-row" style="margin-top:3px; gap:6px;">
-        <button class="toggle-btn" style="flex:1.2;" onclick="mutateCandidate()" title="Mutate selected target subsystem">🎲 Mutate (Targeted)</button>
-        <button class="btn" id="cancelBtn" style="flex:0.8; border-color:#ff4466; color:#ff7788;" onclick="cancelCandidate()" title="Cancel candidate and revert to baseline">❌ Cancel</button>
-      </div>
-
-      <div class="btn-row">
-        <button class="btn" onclick="rollbackGeneration()" title="Rollback to previous generation">⏮ Rollback</button>
-        <button class="btn" onclick="resetToGen0()" title="Reset to original starting NCA weights">↺ Reset Gen 0</button>
-        <button class="btn" onclick="resetToRandomWeights()" title="Reset weights and biases to random distribution">🎲 Reset Random</button>
-        <button class="btn" onclick="resetWiringMatrix()" title="Reset synaptic wiring association matrix">🧠 Reset Wiring</button>
+        <button class="toggle-btn active" id="resetSimulationStateBtn" style="flex:1.4; border-color:#ff9900; color:#ffaa33; font-weight:700;" onclick="resetSimulationStateBtn()" title="Clear canvas, backbuffer, and cleanly re-seed alive center patch in current resolution">🌀 Reset Simulation State</button>
       </div>
 
       <!-- NCA step scale -->
@@ -1382,7 +1412,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       </div>
     </div>
 
-    <!-- Structure Imprint (Giant Full-Screen Easter Egg) -->
+    <!-- Structure Imprint<!-- Structure Imprint (Giant Full-Screen Easter Egg) -->
     <div class="section">
       <div class="section-head">
         <span class="section-title">Giant Structure Imprint (Easter Egg)</span>
@@ -1427,13 +1457,12 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       reverse_pole: false,
       reverse_spin: false,
       nca_step_scale: 1.0,
-      genetic_generation: 0,
-      genetic_has_candidate: false,
-      genetic_mutated_count: 0,
-      genetic_mutation_scale: 0.15,
-      genetic_mutation_rate: 0.25,
-      nca_wiring_links: 0,
-      nca_wiring_events: 0,
+      sim_width: 267,
+      sim_height: 200,
+      sim_scale_mode: 0,
+      sim_scale: 0.333333,
+      sim_preset: "1:3",
+      sim_filtering: 0,
       nca_perturb: 0.0,
       nca_seed: 0.0,
       waveform_mode: 0,
@@ -1441,8 +1470,6 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       nca_auto_cycle: false,
       nca_cycle_interval: 1.5
     };
-
-    let geneticTarget = "all";
 
     const connDot = document.getElementById('connDot');
     const speedSlider = document.getElementById('speedSlider');
@@ -1452,8 +1479,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     const freqMaxSlider = document.getElementById('freqMaxSlider');
     const topologySlider = document.getElementById('topologySlider');
     const ncaStepSlider = document.getElementById('ncaStepSlider');
-    const mutScaleSlider = document.getElementById('mutScaleSlider');
-    const mutRateSlider = document.getElementById('mutRateSlider');
+    const simScaleSlider = document.getElementById('simScaleSlider');
     const imprintInput = document.getElementById('imprintInput');
 
     const speedVal = document.getElementById('speedVal');
@@ -1468,20 +1494,15 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     const topologyLabel = document.getElementById('topologyLabel');
     const topologyDesc = document.getElementById('topologyDesc');
     const ncaStepVal = document.getElementById('ncaStepVal');
-    const geneticGenLabel = document.getElementById('geneticGenLabel');
-    const candidateBadge = document.getElementById('candidateBadge');
-    const mutatedCountLabel = document.getElementById('mutatedCountLabel');
-    const targetNameLabel = document.getElementById('targetNameLabel');
-    const mutScaleVal = document.getElementById('mutScaleVal');
-    const mutRateVal = document.getElementById('mutRateVal');
+    const simResBadge = document.getElementById('simResBadge');
+    const simInfoLabel = document.getElementById('simInfoLabel');
+    const simScaleVal = document.getElementById('simScaleVal');
     const imprintFeedback = document.getElementById('imprintFeedback');
 
     const autoSpeedBtn = document.getElementById('autoSpeedBtn');
     const autoFreqBtn = document.getElementById('autoFreqBtn');
     const reversePoleBtn = document.getElementById('reversePoleBtn');
     const reverseSpinBtn = document.getElementById('reverseSpinBtn');
-    const cancelBtn = document.getElementById('cancelBtn');
-    const reinforceBtn = document.getElementById('reinforceBtn');
 
     let isSending = false;
     let pendingUpdate = false;
@@ -1540,77 +1561,48 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       reverseSpinBtn.innerText = revSpin ? '🔃 Spin: CW (Rev)' : '🔃 Spin: CCW';
       reverseSpinBtn.classList.toggle('active', revSpin);
 
-      // Genetic Algorithm state
-      geneticGenLabel.innerText = 'Gen: ' + (s.genetic_generation !== undefined ? s.genetic_generation : 0);
-      const hasCand = !!s.genetic_has_candidate;
-      if (hasCand) {
-        candidateBadge.className = 'badge badge-candidate';
-        candidateBadge.innerText = 'Candidate Live';
-        cancelBtn.style.opacity = '1.0';
-        reinforceBtn.style.opacity = '1.0';
-      } else {
-        candidateBadge.className = 'badge badge-stable';
-        candidateBadge.innerText = 'Baseline Stable';
-        cancelBtn.style.opacity = '0.4';
-        reinforceBtn.style.opacity = '0.4';
+      // Simulation Resolution UI
+      const sw = s.sim_width || 267;
+      const sh = s.sim_height || 200;
+      const totalCells = (sw * sh) >= 1000 ? ((sw * sh) / 1000).toFixed(1) + 'k' : (sw * sh);
+      const isRelative = (s.sim_scale_mode === 0);
+      const presetName = s.sim_preset || (isRelative ? '1:3' : (sw + 'x' + sh));
+      
+      if (simResBadge) {
+        simResBadge.innerText = `${sw} × ${sh} (${presetName})`;
       }
-      mutatedCountLabel.innerText = 'Mutated: ' + (s.genetic_mutated_count || 0) + ' weights';
-
-      // Synaptic wiring stats ("fires together, wires together")
-      const wiringBadge = document.getElementById('wiringBadge');
-      if (wiringBadge) {
-        const links = s.nca_wiring_links !== undefined ? s.nca_wiring_links : (state.nca_wiring_links || 0);
-        const events = s.nca_wiring_events !== undefined ? s.nca_wiring_events : (state.nca_wiring_events || 0);
-        wiringBadge.innerText = `${links} links (${events} reinforced)`;
+      if (simInfoLabel) {
+        simInfoLabel.innerText = `${totalCells} cells • ${isRelative ? 'Relative ' + presetName : 'Fixed Grid'}`;
       }
-
-      // Auto-reroll on collapse/explosion telemetry
-      const rerollBadge = document.getElementById('rerollBadge');
-      if (rerollBadge) {
-        const rerolls = s.nca_rerolls !== undefined ? s.nca_rerolls : 0;
-        const autoActive = s.nca_auto_reroll !== undefined ? s.nca_auto_reroll : true;
-        if (!autoActive) {
-          rerollBadge.innerText = 'Disabled';
-          rerollBadge.style.color = 'var(--text-dim)';
-        } else if (rerolls > 0) {
-          rerollBadge.innerText = `Active (${rerolls} auto-rerolled)`;
-          rerollBadge.style.color = '#ffbb00';
-        } else {
-          rerollBadge.innerText = 'Active (0 rerolls)';
-          rerollBadge.style.color = 'var(--accent)';
+      if (simScaleVal) {
+        const sc = s.sim_scale !== undefined ? parseFloat(s.sim_scale) : 0.33;
+        simScaleVal.innerText = `${sc.toFixed(2)}x (${sw}×${sh})`;
+        if (simScaleSlider && !simScaleSlider.matches(':active')) {
+          simScaleSlider.value = sc;
         }
       }
 
-      // Viewport dimming and criteria controls in UI
-      const dimBtn = document.getElementById('dimRerollBtn');
-      if (dimBtn && s.nca_dim_on_reroll !== undefined) {
-        state.nca_dim_on_reroll = !!s.nca_dim_on_reroll;
-        dimBtn.classList.toggle('active', state.nca_dim_on_reroll);
-        dimBtn.innerText = state.nca_dim_on_reroll ? '🌙 Dim State on Re-roll (ON)' : '🌙 Dim State on Re-roll (OFF)';
-      }
+      // Highlight active relative preset buttons
+      document.getElementById('presetBtn1_1')?.classList.toggle('active', presetName === '1:1');
+      document.getElementById('presetBtn2_3')?.classList.toggle('active', presetName === '1:1.5' || presetName === '2:3');
+      document.getElementById('presetBtn1_2')?.classList.toggle('active', presetName === '1:2' || presetName === 'half');
+      document.getElementById('presetBtn1_3')?.classList.toggle('active', presetName === '1:3' || presetName === 'default');
+      document.getElementById('presetBtn1_4')?.classList.toggle('active', presetName === '1:4' || presetName === 'quarter');
+      document.getElementById('presetBtn1_6')?.classList.toggle('active', presetName === '1:6' || presetName === 'sixth');
 
-      const critBtn = document.getElementById('criteriaBtn');
-      if (critBtn && s.nca_eased_criteria !== undefined) {
-        state.nca_eased_criteria = !!s.nca_eased_criteria;
-        critBtn.classList.toggle('active', state.nca_eased_criteria);
-        critBtn.innerText = state.nca_eased_criteria ? '🛡️ Criteria: Eased' : '⚡ Criteria: Strict';
-      }
+      // Highlight active fixed preset buttons
+      document.getElementById('presetBtn160')?.classList.toggle('active', presetName === '160x120');
+      document.getElementById('presetBtn200')?.classList.toggle('active', presetName === '200x150');
+      document.getElementById('presetBtn267')?.classList.toggle('active', presetName === '267x200');
+      document.getElementById('presetBtn320')?.classList.toggle('active', presetName === '320x240');
+      document.getElementById('presetBtn400')?.classList.toggle('active', presetName === '400x300');
+      document.getElementById('presetBtn512')?.classList.toggle('active', presetName === '512x384');
 
-      const dimLabel = document.getElementById('dimStatusLabel');
-      if (dimLabel) {
-        const dimVal = s.nca_viewport_dim !== undefined ? s.nca_viewport_dim : (state.nca_viewport_dim !== undefined ? state.nca_viewport_dim : 1.0);
-        const pct = Math.round(dimVal * 100);
-        if (state.nca_dim_on_reroll === false) {
-          dimLabel.innerText = 'Disabled';
-          dimLabel.style.color = 'var(--text-dim)';
-        } else if (dimVal < 0.90) {
-          dimLabel.innerText = `Damped (${pct}% State Scale)`;
-          dimLabel.style.color = '#ffbb00';
-        } else {
-          dimLabel.innerText = 'Active (100% Scale)';
-          dimLabel.style.color = 'var(--accent-cyan)';
-        }
-      }
+      // Highlight active filtering buttons
+      const filt = s.sim_filtering !== undefined ? parseInt(s.sim_filtering) : 0;
+      document.getElementById('filterBtnHermite')?.classList.toggle('active', filt === 0);
+      document.getElementById('filterBtnBilinear')?.classList.toggle('active', filt === 1);
+      document.getElementById('filterBtnNearest')?.classList.toggle('active', filt === 2);
 
       if (!autoSpeedBtn.matches(':active') && s.auto_speed !== undefined) {
         autoSpeedBtn.classList.toggle('active', !!s.auto_speed);
@@ -1696,8 +1688,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       freqMaxSlider.value = state.freq_max;
       topologySlider.value = state.nca_topology;
       ncaStepSlider.value = state.nca_step_scale;
-      mutScaleSlider.value = state.genetic_mutation_scale;
-      mutRateSlider.value = state.genetic_mutation_rate;
+      if (simScaleSlider) simScaleSlider.value = state.sim_scale || 0.33;
       const cycleSlider = document.getElementById('cycleIntervalSlider');
       if (cycleSlider) cycleSlider.value = state.nca_cycle_interval || 1.5;
       updateUI(state);
@@ -1827,15 +1818,18 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       sendControls();
     });
 
-    mutScaleSlider.addEventListener('input', () => {
-      state.genetic_mutation_scale = parseFloat(mutScaleSlider.value);
-      mutScaleVal.innerText = state.genetic_mutation_scale.toFixed(2);
-    });
-
-    mutRateSlider.addEventListener('input', () => {
-      state.genetic_mutation_rate = parseFloat(mutRateSlider.value);
-      mutRateVal.innerText = Math.round(state.genetic_mutation_rate * 100) + '%';
-    });
+    if (simScaleSlider) {
+      simScaleSlider.addEventListener('input', () => {
+        const sc = parseFloat(simScaleSlider.value);
+        state.sim_scale = sc;
+        const sw = Math.round(800 * sc);
+        const sh = Math.round(600 * sc);
+        if (simScaleVal) simScaleVal.innerText = `${sc.toFixed(2)}x (${sw}×${sh})`;
+      });
+      simScaleSlider.addEventListener('change', () => {
+        setSimScale(simScaleSlider.value);
+      });
+    }
 
     function setTopology(v) {
       state.nca_topology = v;
@@ -1951,41 +1945,13 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       sendControls();
     }
 
-    // --- Genetic Algorithm Actions ---
-    function setGeneticTarget(tgt) {
-      geneticTarget = tgt;
-      const names = {
-        all: "All (588)",
-        everything: "💥 Everything (100%)",
-        perception: "Perception (Sobel/Lap)",
-        state: "State Recurrence",
-        nonlinear: "Nonlinear (|xs|, |ps|)",
-        biases: "Biases (12)"
-      };
-      targetNameLabel.innerText = names[tgt] || tgt;
-      document.getElementById('targetBtnAll')?.classList.toggle('active', tgt === 'all');
-      document.getElementById('targetBtnPercep')?.classList.toggle('active', tgt === 'perception');
-      document.getElementById('targetBtnState')?.classList.toggle('active', tgt === 'state');
-      document.getElementById('targetBtnNonlin')?.classList.toggle('active', tgt === 'nonlinear');
-      document.getElementById('targetBtnBias')?.classList.toggle('active', tgt === 'biases');
-      if (tgt === 'everything') {
-        state.genetic_mutation_rate = 1.0;
-        mutRateSlider.value = 1.0;
-        mutRateVal.innerText = '100%';
-      }
-    }
-
-    async function mutateCandidate() {
+    // --- Simulation Resolution Actions ---
+    async function setSimPreset(preset) {
       try {
-        const res = await fetch('/api/genetic', {
+        const res = await fetch('/api/resolution', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'mutate',
-            target: geneticTarget,
-            scale: parseFloat(state.genetic_mutation_scale),
-            rate: parseFloat(state.genetic_mutation_rate)
-          })
+          body: JSON.stringify({ preset: preset, resample: true })
         });
         if (res.ok) {
           const data = await res.json();
@@ -1995,17 +1961,12 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       } catch (e) {}
     }
 
-    async function mutateEverything() {
+    async function setSimScale(scale) {
       try {
-        const res = await fetch('/api/genetic', {
+        const res = await fetch('/api/resolution', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'mutate_everything',
-            target: 'everything',
-            scale: parseFloat(state.genetic_mutation_scale),
-            rate: 1.0
-          })
+          body: JSON.stringify({ scale: parseFloat(scale), resample: true })
         });
         if (res.ok) {
           const data = await res.json();
@@ -2015,123 +1976,12 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       } catch (e) {}
     }
 
-    async function cancelCandidate() {
+    async function setSimFiltering(mode) {
       try {
-        const res = await fetch('/api/genetic', {
+        const res = await fetch('/api/resolution', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'cancel' })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          Object.assign(state, data);
-          updateUI(state);
-        }
-      } catch (e) {}
-    }
-
-    async function reinforceCandidate() {
-      try {
-        const res = await fetch('/api/genetic', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'reinforce' })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          Object.assign(state, data);
-          updateUI(state);
-        }
-      } catch (e) {}
-    }
-
-    async function rollbackGeneration() {
-      try {
-        const res = await fetch('/api/genetic', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'rollback' })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          Object.assign(state, data);
-          updateUI(state);
-        }
-      } catch (e) {}
-    }
-
-    async function resetToGen0() {
-      try {
-        const res = await fetch('/api/genetic', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'reset' })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          Object.assign(state, data);
-          updateUI(state);
-        }
-      } catch (e) {}
-    }
-
-    async function resetToRandomWeights() {
-      try {
-        const res = await fetch('/api/genetic', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'reset_random' })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          Object.assign(state, data);
-          updateUI(state);
-        }
-      } catch (e) {}
-    }
-
-    async function resetWiringMatrix() {
-      try {
-        const res = await fetch('/api/genetic', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'reset_wiring' })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          Object.assign(state, data);
-          updateUI(state);
-        }
-      } catch (e) {}
-    }
-
-    async function toggleDimOnReroll() {
-      const nextVal = state.nca_dim_on_reroll === undefined ? false : !state.nca_dim_on_reroll;
-      state.nca_dim_on_reroll = nextVal;
-      updateUI(state);
-      try {
-        const res = await fetch('/api/controls', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dim_on_reroll: nextVal })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          Object.assign(state, data);
-          updateUI(state);
-        }
-      } catch (e) {}
-    }
-
-    async function toggleRerollCriteria() {
-      const nextVal = state.nca_eased_criteria === undefined ? false : !state.nca_eased_criteria;
-      state.nca_eased_criteria = nextVal;
-      updateUI(state);
-      try {
-        const res = await fetch('/api/controls', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ eased_criteria: nextVal })
+          body: JSON.stringify({ filtering: parseInt(mode) })
         });
         if (res.ok) {
           const data = await res.json();
@@ -2143,13 +1993,12 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 
     async function resetSimulationStateBtn() {
       try {
-        const feedback = document.getElementById('stateResetFeedback');
-        if (feedback) feedback.innerText = 'Resetting...';
-        const res = await fetch('/api/reset_state', { method: 'POST' });
-        if (res.ok) {
-          if (feedback) feedback.innerText = 'Clean Seed Reset!';
-          setTimeout(() => { if (feedback) feedback.innerText = 'Active'; }, 2200);
-        }
+        const label = document.getElementById('dimStatusLabel');
+        if (label) label.innerText = 'Resetting State...';
+        await fetch('/api/reset_state', { method: 'POST' });
+        setTimeout(() => {
+          if (label) label.innerText = 'Active (100% Energy)';
+        }, 1200);
       } catch (e) {}
     }
 

@@ -96,369 +96,85 @@ struct NcaGpuGenome {
     float B[12];  // 12
 };
 
-class NcaGeneticEngine {
-public:
-    static const int TOTAL_PARAMS = 588; // 576 weights (48 x 12) + 12 biases
-    NcaGpuGenome baseline;
-    NcaGpuGenome candidate;
-    std::vector<NcaGpuGenome> history;
-    int generation = 0;
-    bool hasCandidate = false;
-    int mutatedCount = 0;
-    bool dirty = false;
-    std::mt19937 rng;
+// Baseline trained NCA genome buffer representation
+NcaGpuGenome g_baselineGenome;
 
-    // Synaptic Wiring: parameters that were changed together in reinforced mutations wire together,
-    // making them significantly more likely to co-fire in subsequent mutations.
-    std::vector<int> lastMutatedIndices;
-    std::vector<float> wiringMatrix; // 588 x 588 symmetric association strengths
-    int wiringEvents = 0;            // Number of successful reinforcement events
-
-    NcaGeneticEngine() : rng(1337) {
-        wiringMatrix.assign(TOTAL_PARAMS * TOTAL_PARAMS, 0.0f);
-        resetToOriginal();
-    }
-
-    void resetToOriginal() {
-        for (int i = 0; i < 48; i++) {
-            for (int c = 0; c < 12; c++) {
-                baseline.W[i * 12 + c] = ORIGINAL_NCA_W[i][c];
-            }
-        }
+void initializeBaselineGenome() {
+    for (int i = 0; i < 48; i++) {
         for (int c = 0; c < 12; c++) {
-            baseline.B[c] = ORIGINAL_NCA_B[c];
+            g_baselineGenome.W[i * 12 + c] = ORIGINAL_NCA_W[i][c];
         }
-        candidate = baseline;
-        history.clear();
-        generation = 0;
-        hasCandidate = false;
-        mutatedCount = 0;
-        lastMutatedIndices.clear();
-        dirty = true;
     }
-
-    void resetToRandom() {
-        // Sample random initialization on same scale as trained weights
-        std::normal_distribution<float> wDist(0.0f, 350.0f);
-        std::normal_distribution<float> bDist(0.0f, 350.0f);
-        for (int i = 0; i < 576; i++) {
-            baseline.W[i] = wDist(rng);
-        }
-        for (int c = 0; c < 12; c++) {
-            baseline.B[c] = bDist(rng);
-        }
-        regularizeAntiChaos(baseline);
-        candidate = baseline;
-        history.clear();
-        generation = 0;
-        hasCandidate = false;
-        mutatedCount = 0;
-        lastMutatedIndices.clear();
-        dirty = true;
-        std::cout << "[Genetic Engine] NCA weights and biases reset to random distribution" << std::endl;
+    for (int c = 0; c < 12; c++) {
+        g_baselineGenome.B[c] = ORIGINAL_NCA_B[c];
     }
+}
 
-    void resetWiring() {
-        wiringMatrix.assign(TOTAL_PARAMS * TOTAL_PARAMS, 0.0f);
-        wiringEvents = 0;
-        std::cout << "[Genetic Engine] Synaptic wiring matrix reset to zero" << std::endl;
-    }
+// Simulation resolution configuration (semi-independent from screen resolution)
+int g_simWidth = 267;
+int g_simHeight = 200;
+int g_simScaleMode = 0; // 0 = Relative, 1 = Fixed
+float g_simScale = 0.333333f;
+const int MAX_SIM_WIDTH = 1920;
+const int MAX_SIM_HEIGHT = 1080;
 
-    std::string lastTarget{"all"};
-    float lastScale{0.15f};
-    float lastRate{0.25f};
-    int rerollAttempts{0};
+void setSimulationResolution(int newW, int newH, bool resample = true) {
+    newW = std::max(32, std::min(MAX_SIM_WIDTH, newW));
+    newH = std::max(24, std::min(MAX_SIM_HEIGHT, newH));
+    if (newW == g_simWidth && newH == g_simHeight) return;
 
-    int reroll() {
-        rerollAttempts++;
-        float scaleMultiplier = std::pow(0.85f, (float)std::min(5, rerollAttempts - 1));
-        float effectiveScale = lastScale * scaleMultiplier;
-        std::cout << "[Genetic Engine] Auto-rerolling candidate mutation (attempt " << rerollAttempts 
-                  << ", target=" << lastTarget << ", scale=" << effectiveScale << ", rate=" << lastRate << ")" << std::endl;
-        return mutate(lastTarget, effectiveScale, lastRate, false);
-    }
+    int oldW = g_simWidth;
+    int oldH = g_simHeight;
+    const int N_CHANNELS = 12;
 
-    int mutate(const std::string& target, float scale, float rate, bool resetAttempts = true) {
-        if (resetAttempts) {
-            rerollAttempts = 0;
-        }
-        lastTarget = target;
-        lastScale = scale;
-        lastRate = rate;
+    if (resample && texturesInitialized && stateBuffer != 0) {
+        std::vector<float> oldBuf((size_t)oldW * oldH * N_CHANNELS);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBuffer);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, oldBuf.size() * sizeof(float), oldBuf.data());
 
-        candidate = baseline;
-        lastMutatedIndices.clear();
-        std::uniform_real_distribution<float> probDist(0.0f, 1.0f);
-        std::normal_distribution<float> normDist(0.0f, 1.0f);
+        std::vector<float> newBuf((size_t)newW * newH * N_CHANNELS, 0.0f);
+        // Bilinear state resampling across all 12 channels with toroidal wrapping to preserve living patterns
+        for (int ny = 0; ny < newH; ny++) {
+            float v = ((float)ny + 0.5f) * ((float)oldH / (float)newH) - 0.5f;
+            int iy = (int)std::floor(v);
+            float fy = v - (float)iy;
+            int y0 = ((iy % oldH) + oldH) % oldH;
+            int y1 = (((iy + 1) % oldH) + oldH) % oldH;
 
-        int count = 0;
-        float effScale = std::max(0.01f, std::min(1.0f, scale));
-        float effRate = std::max(0.01f, std::min(1.0f, rate));
-        bool isEverything = (target == "everything" || target == "all_100");
+            for (int nx = 0; nx < newW; nx++) {
+                float u = ((float)nx + 0.5f) * ((float)oldW / (float)newW) - 0.5f;
+                int ix = (int)std::floor(u);
+                float fx = u - (float)ix;
+                int x0 = ((ix % oldW) + oldW) % oldW;
+                int x1 = (((ix + 1) % oldW) + oldW) % oldW;
 
-        std::vector<bool> willMutate(TOTAL_PARAMS, false);
+                size_t idx00 = (size_t)(y0 * oldW + x0) * N_CHANNELS;
+                size_t idx10 = (size_t)(y0 * oldW + x1) * N_CHANNELS;
+                size_t idx01 = (size_t)(y1 * oldW + x0) * N_CHANNELS;
+                size_t idx11 = (size_t)(y1 * oldW + x1) * N_CHANNELS;
+                size_t outIdx = (size_t)(ny * newW + nx) * N_CHANNELS;
 
-        // 1. Initial selection based on target subsystem and base mutation rate
-        for (int row = 0; row < 48; row++) {
-            bool targetRow = false;
-            if (isEverything || target == "all") {
-                targetRow = true;
-            } else if (target == "perception") {
-                targetRow = (row >= 12 && row < 24) || (row >= 36 && row < 48);
-            } else if (target == "state") {
-                targetRow = (row < 12) || (row >= 24 && row < 36);
-            } else if (target == "nonlinear") {
-                targetRow = (row >= 24 && row < 48);
-            }
-
-            if (!targetRow) continue;
-
-            for (int col = 0; col < 12; col++) {
-                if (isEverything || probDist(rng) < effRate) {
-                    willMutate[row * 12 + col] = true;
+                for (int c = 0; c < N_CHANNELS; c++) {
+                    float top = oldBuf[idx00 + c] * (1.0f - fx) + oldBuf[idx10 + c] * fx;
+                    float bot = oldBuf[idx01 + c] * (1.0f - fx) + oldBuf[idx11 + c] * fx;
+                    newBuf[outIdx + c] = top * (1.0f - fy) + bot * fy;
                 }
             }
         }
 
-        if (isEverything || target == "all" || target == "biases" || target == "bias") {
-            for (int c = 0; c < 12; c++) {
-                if (isEverything || probDist(rng) < effRate) {
-                    willMutate[576 + c] = true;
-                }
-            }
-        }
-
-        // 2. Synaptic wiring propagation: parameters wired to firing parameters fire together!
-        if (!isEverything && wiringEvents > 0) {
-            std::vector<int> initialFired;
-            initialFired.reserve(TOTAL_PARAMS);
-            for (int i = 0; i < TOTAL_PARAMS; i++) {
-                if (willMutate[i]) initialFired.push_back(i);
-            }
-
-            if (!initialFired.empty()) {
-                for (int j = 0; j < TOTAL_PARAMS; j++) {
-                    if (willMutate[j]) continue;
-
-                    float excitation = 0.0f;
-                    for (int firedIdx : initialFired) {
-                        excitation += wiringMatrix[firedIdx * TOTAL_PARAMS + j];
-                    }
-
-                    if (excitation > 0.001f) {
-                        // Hebbian co-firing probability: excitation exponentially increases fire probability
-                        float cofireProb = 1.0f - std::exp(-0.4f * excitation);
-                        if (probDist(rng) < cofireProb) {
-                            willMutate[j] = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. Mutate all parameters that fired
-        for (int idx = 0; idx < TOTAL_PARAMS; idx++) {
-            if (!willMutate[idx]) continue;
-
-            if (idx < 576) {
-                float orig = candidate.W[idx];
-                float delta = normDist(rng) * (std::abs(orig) * effScale + 40.0f * effScale);
-                candidate.W[idx] += delta;
-            } else {
-                int c = idx - 576;
-                float orig = candidate.B[c];
-                float delta = normDist(rng) * (std::abs(orig) * effScale + 40.0f * effScale);
-                candidate.B[c] += delta;
-            }
-            lastMutatedIndices.push_back(idx);
-            count++;
-        }
-
-        // Apply Anti-Chaos Weight Regularization Strategy:
-        // Guarantees negative self-damping, bounds spectral radius via Gershgorin circle theorem,
-        // and prevents high-frequency spatial gradients from pumping chaotic energy into the grid.
-        regularizeAntiChaos(candidate);
-
-        mutatedCount = count;
-        hasCandidate = true;
-        dirty = true;
-        return count;
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBuffer);
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, newBuf.size() * sizeof(float), newBuf.data());
     }
 
-    void regularizeAntiChaos(NcaGpuGenome& g) {
-        // 1. Diagonal Homeostasis:
-        // In the trained model, W[c][c] (c in 0..11) are strongly negative (-785 to -3107),
-        // giving each channel strong dissipative self-damping.
-        // Maintain negative diagonal homeostasis at <= -750.0f.
-        for (int c = 0; c < 12; c++) {
-            int diagIdx = c * 12 + c;
-            if (g.W[diagIdx] > -750.0f) {
-                g.W[diagIdx] = -750.0f - std::abs(g.W[diagIdx] + 750.0f) * 0.3f;
-            }
-            if (g.W[diagIdx] < -3500.0f) {
-                g.W[diagIdx] = -3500.0f;
-            }
-        }
-
-        // 2. Column-wise Cross-Channel Recurrence (Inputs 0..11 to Output c):
-        // Bounding cross-channel coupling so it cannot overwhelm diagonal self-damping.
-        for (int c = 0; c < 12; c++) {
-            float damping = std::abs(g.W[c * 12 + c]);
-            float offDiagSum = 0.0f;
-            for (int i = 0; i < 12; i++) {
-                if (i != c) {
-                    offDiagSum += std::abs(g.W[i * 12 + c]);
-                }
-            }
-            float maxOffDiag = 3.5f * damping;
-            if (offDiagSum > maxOffDiag && offDiagSum > 1e-4f) {
-                float factor = maxOffDiag / offDiagSum;
-                for (int i = 0; i < 12; i++) {
-                    if (i != c) {
-                        g.W[i * 12 + c] *= factor;
-                    }
-                }
-            }
-        }
-
-        // 3. Spatial Gradient Gain & Dissipation (Inputs 12..23 - Sobel/Laplace to Output c):
-        // Dynamic chaos feeds on runaway spatial gradient amplification.
-        // Ensure total perception gain per channel is bounded relative to its state damping.
-        for (int c = 0; c < 12; c++) {
-            float damping = std::abs(g.W[c * 12 + c]);
-            float percepSum = 0.0f;
-            for (int i = 12; i < 24; i++) {
-                percepSum += std::abs(g.W[i * 12 + c]);
-            }
-            float maxPercep = 1.9f * damping;
-            if (percepSum > maxPercep && percepSum > 1e-4f) {
-                float factor = maxPercep / percepSum;
-                for (int i = 12; i < 24; i++) {
-                    g.W[i * 12 + c] *= factor;
-                }
-            }
-        }
-
-        // 4. Positive Nonlinear Terms & Biases Damping (Inputs 24..47: |x| and |ps|):
-        // |x| and |ps| are strictly non-negative. Positive weights act as persistent positive drift.
-        // If positive drift exceeds negative linear restoring force, the channel pegs to +1.5.
-        for (int c = 0; c < 12; c++) {
-            float damping = std::abs(g.W[c * 12 + c]);
-            float posSum = 0.0f;
-            for (int i = 24; i < 48; i++) {
-                if (g.W[i * 12 + c] > 0.0f) {
-                    posSum += g.W[i * 12 + c];
-                }
-            }
-            if (g.B[c] > 0.0f) posSum += g.B[c];
-
-            float maxPos = 2.4f * damping;
-            if (posSum > maxPos && posSum > 1e-4f) {
-                float factor = maxPos / posSum;
-                for (int i = 24; i < 48; i++) {
-                    if (g.W[i * 12 + c] > 0.0f) {
-                        g.W[i * 12 + c] *= factor;
-                    }
-                }
-                if (g.B[c] > 0.0f) {
-                    g.B[c] *= factor;
-                }
-            }
-        }
-
-        // 5. Biases moderation: prevent hard saturation to clamp boundaries
-        for (int c = 0; c < 12; c++) {
-            g.B[c] = std::max(-950.0f, std::min(950.0f, g.B[c]));
-        }
+    g_simWidth = newW;
+    g_simHeight = newH;
+    if (!g_radarConfig.hasPendingSimulationResolution()) {
+        g_radarConfig.simWidth.store(newW);
+        g_radarConfig.simHeight.store(newH);
     }
-
-    void cancel() {
-        if (hasCandidate) {
-            candidate = baseline;
-            hasCandidate = false;
-            mutatedCount = 0;
-            rerollAttempts = 0;
-            lastMutatedIndices.clear();
-            dirty = true;
-        }
-    }
-
-    void reinforce() {
-        if (hasCandidate) {
-            history.push_back(baseline);
-            if (history.size() > 25) {
-                history.erase(history.begin());
-            }
-            baseline = candidate;
-            generation++;
-
-            // Wire together all parameters that changed in this successful candidate!
-            if (lastMutatedIndices.size() >= 2) {
-                float increment = 1.0f;
-                if (lastMutatedIndices.size() > 60) {
-                    increment = 60.0f / (float)lastMutatedIndices.size();
-                }
-                for (size_t a = 0; a < lastMutatedIndices.size(); a++) {
-                    int idxA = lastMutatedIndices[a];
-                    for (size_t b = a + 1; b < lastMutatedIndices.size(); b++) {
-                        int idxB = lastMutatedIndices[b];
-                        wiringMatrix[idxA * TOTAL_PARAMS + idxB] += increment;
-                        wiringMatrix[idxB * TOTAL_PARAMS + idxA] += increment;
-                    }
-                }
-                wiringEvents++;
-            }
-
-            hasCandidate = false;
-            mutatedCount = 0;
-            rerollAttempts = 0;
-            lastMutatedIndices.clear();
-            dirty = true;
-        }
-    }
-
-    bool rollback() {
-        if (!history.empty()) {
-            baseline = history.back();
-            history.pop_back();
-            candidate = baseline;
-            if (generation > 0) generation--;
-            hasCandidate = false;
-            mutatedCount = 0;
-            rerollAttempts = 0;
-            lastMutatedIndices.clear();
-            dirty = true;
-            return true;
-        }
-        return false;
-    }
-
-    int getActiveWiredLinks() const {
-        int links = 0;
-        for (int i = 0; i < TOTAL_PARAMS; i++) {
-            for (int j = i + 1; j < TOTAL_PARAMS; j++) {
-                if (wiringMatrix[i * TOTAL_PARAMS + j] > 0.01f) {
-                    links++;
-                }
-            }
-        }
-        return links;
-    }
-
-    float getMaxWiringStrength() const {
-        float maxS = 0.0f;
-        for (int i = 0; i < TOTAL_PARAMS * TOTAL_PARAMS; i++) {
-            if (wiringMatrix[i] > maxS) maxS = wiringMatrix[i];
-        }
-        return maxS;
-    }
-
-    const NcaGpuGenome& getActiveGenome() const {
-        return hasCandidate ? candidate : baseline;
-    }
-};
-
-NcaGeneticEngine g_geneticEngine;
+    std::cout << "[Simulation] Resolution updated to: " << newW << "x" << newH 
+              << " (resampled=" << (resample ? "true" : "false") << ")" << std::endl;
+}
 
 // --- Jacobi Eigenvalue Algorithm for 12x12 Symmetric Covariance Matrix ---
 inline void jacobi12x12(const float A[12][12], float eigenvals[12], float V[12][12]) {
@@ -562,10 +278,10 @@ struct NcaStateAnalyzer {
         float spatialRoughness = 0.0f;
     };
 
-    AnalysisResult analyze(unsigned int stateBufHandle, int texWidth, int texHeight, bool easedCriteria = true, bool checkCollapse = false) {
+    AnalysisResult analyze(unsigned int stateBufHandle, int simWidth, int simHeight, bool easedCriteria = true, bool checkCollapse = false) {
         AnalysisResult res;
-        int sw = texWidth / 3;
-        int sh = texHeight / 3;
+        int sw = simWidth;
+        int sh = simHeight;
         int totalCells = sw * sh;
         if (totalCells <= 0) return res;
 
@@ -920,7 +636,7 @@ void imprintTextMessage(const std::string& msg) {
 }
 
 void resetSimulationState() {
-    if (TEXTURE_WIDTH == 0 || TEXTURE_HEIGHT == 0) return;
+    if (TEXTURE_WIDTH == 0 || TEXTURE_HEIGHT == 0 || g_simWidth == 0 || g_simHeight == 0) return;
 
     // 1. Clear backbuffer texture
     std::vector<float> emptyBack(TEXTURE_WIDTH * TEXTURE_HEIGHT * 4, 0.0f);
@@ -933,21 +649,21 @@ void resetSimulationState() {
     glBindTexture(GL_TEXTURE_2D, outputTexture);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, TEXTURE_WIDTH, TEXTURE_HEIGHT, GL_RGBA, GL_FLOAT, emptyBack.data());
 
-    // 3. Clear and re-seed NCA state buffer with alive center patch
+    // 3. Clear and re-seed NCA state buffer with alive center patch in current sim grid
     const unsigned int N_CHANNELS = 12;
-    const size_t stateBufferSize = TEXTURE_WIDTH * TEXTURE_HEIGHT * N_CHANNELS * sizeof(float);
-    std::vector<float> initState(TEXTURE_WIDTH * TEXTURE_HEIGHT * N_CHANNELS, 0.0f);
+    int sw = g_simWidth;
+    int sh = g_simHeight;
+    std::vector<float> initState((size_t)sw * sh * N_CHANNELS, 0.0f);
 
-    int sw = TEXTURE_WIDTH / 3;
-    int sh = TEXTURE_HEIGHT / 3;
     int cx = sw / 2;
     int cy = sh / 2;
-    for (int y = std::max(0, cy - 10); y <= std::min(sh - 1, cy + 10); y++) {
-        for (int x = std::max(0, cx - 10); x <= std::min(sw - 1, cx + 10); x++) {
+    int radius = std::max(4, std::min(16, sw / 25));
+    for (int y = std::max(0, cy - radius); y <= std::min(sh - 1, cy + radius); y++) {
+        for (int x = std::max(0, cx - radius); x <= std::min(sw - 1, cx + radius); x++) {
             float dist = std::sqrt((float)((x - cx)*(x - cx) + (y - cy)*(y - cy)));
-            if (dist <= 10.0f) {
+            if (dist <= (float)radius) {
                 int idx = (y * sw + x) * N_CHANNELS;
-                float falloff = 1.0f - dist / 10.0f;
+                float falloff = 1.0f - dist / (float)radius;
                 initState[idx + 0] = 0.5f * falloff;
                 initState[idx + 1] = 0.2f * falloff;
                 initState[idx + 2] = 0.3f * falloff;
@@ -957,7 +673,7 @@ void resetSimulationState() {
         }
     }
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBuffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, stateBufferSize, initState.data());
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, initState.size() * sizeof(float), initState.data());
 
     // 4. Clear agent simulation buffers
     const unsigned int AGENT_COUNT = 10000;
@@ -973,13 +689,13 @@ void resetSimulationState() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, angleBuffer);
     glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * sizeof(float), NULL, GL_DYNAMIC_DRAW);
 
-    std::cout << "[Simulation] State completely reset with fresh center seed" << std::endl;
+    std::cout << "[Simulation] State completely reset with fresh center seed in " << sw << "x" << sh << " grid" << std::endl;
 }
 
 void dimSimulationState(float factor) {
-    if (TEXTURE_WIDTH == 0 || TEXTURE_HEIGHT == 0) return;
-    int sw = TEXTURE_WIDTH / 3;
-    int sh = TEXTURE_HEIGHT / 3;
+    if (TEXTURE_WIDTH == 0 || TEXTURE_HEIGHT == 0 || g_simWidth == 0 || g_simHeight == 0) return;
+    int sw = g_simWidth;
+    int sh = g_simHeight;
     int totalCells = sw * sh;
     if (totalCells <= 0) return;
 
@@ -1004,7 +720,7 @@ void dimSimulationState(float factor) {
     }
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, TEXTURE_WIDTH, TEXTURE_HEIGHT, GL_RGBA, GL_FLOAT, backBuf.data());
 
-    std::cout << "[Simulation] State directly dimmed by factor " << clampedFactor << " (screen unscaled)" << std::endl;
+    std::cout << "[Simulation] State directly dimmed by factor " << clampedFactor << std::endl;
 }
 
 unsigned int frameCounter;
@@ -1045,11 +761,12 @@ void recreateTextures(int width, int height) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, NULL);
     glBindImageTexture(3, backbufferTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
     
-    // Recreate simulation state buffer
-    const unsigned int N_CHANNELS = 12;
-    const size_t stateBufferSize = width * height * N_CHANNELS * sizeof(float);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBuffer);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, stateBufferSize, NULL, GL_DYNAMIC_DRAW);
+    // If in Relative resolution mode, adjust simulation resolution proportionally
+    if (g_simScaleMode == 0) {
+        int targetW = std::max(32, (int)std::round((float)width * g_simScale));
+        int targetH = std::max(24, (int)std::round((float)height * g_simScale));
+        setSimulationResolution(targetW, targetH, true);
+    }
     
     // Recreate trail grid buffer (uses width as grid size)
     const unsigned int GRID_SIZE = width;
@@ -1077,8 +794,8 @@ void recreateTextures(int width, int height) {
     currentFrame = 0.;
     frameCounter = 0;
 
-    
-    std::cout << "Textures and buffers recreated for resolution: " << width << "x" << height << std::endl;
+    std::cout << "Textures recreated for window resolution: " << width << "x" << height 
+              << ", sim resolution: " << g_simWidth << "x" << g_simHeight << std::endl;
 }
 
 void renderQuad();
@@ -1639,11 +1356,9 @@ int main(int argc, char* argv[]) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, TEXTURE_WIDTH, TEXTURE_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
     glBindImageTexture(3, backbufferTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
 
-    // Create storage buffer for simulation states
-    const unsigned int SIM_WIDTH = SCR_WIDTH ;
-    const unsigned int SIM_HEIGHT = SCR_HEIGHT ;
+    // Create storage buffer for simulation states (capacity for up to MAX_SIM_WIDTH x MAX_SIM_HEIGHT)
     const unsigned int N_CHANNELS = 12;
-    const size_t stateBufferSize = SIM_WIDTH * SIM_HEIGHT * N_CHANNELS * sizeof(float);
+    const size_t stateBufferSize = (size_t)MAX_SIM_WIDTH * MAX_SIM_HEIGHT * N_CHANNELS * sizeof(float);
     
     glGenBuffers(1, &stateBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, stateBuffer);
@@ -1684,11 +1399,15 @@ int main(int argc, char* argv[]) {
     glBufferData(GL_SHADER_STORAGE_BUFFER, AGENT_COUNT * sizeof(float), NULL, GL_DYNAMIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, angleBuffer);
 
-    // Dynamic NCA genome weights buffer (binding 11) for Human-Assisted Genetic Algorithm
+    // Baseline trained NCA weights buffer (binding 11)
+    initializeBaselineGenome();
     glGenBuffers(1, &ncaWeightBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ncaWeightBuffer);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(NcaGpuGenome), &g_geneticEngine.getActiveGenome(), GL_DYNAMIC_DRAW);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(NcaGpuGenome), &g_baselineGenome, GL_STATIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, ncaWeightBuffer);
+
+    // Initial state seed
+    resetSimulationState();
 
     // Create uniform buffer for frame counter and other uniforms
     struct UniformData {
@@ -1824,116 +1543,30 @@ int main(int argc, char* argv[]) {
             // Handle pending simulation state reset
             if (g_radarConfig.resetStateRequested.exchange(false)) {
                 resetSimulationState();
-                if (g_radarConfig.ncaDimOnReroll.load()) {
-                    currentDimFactor = 0.05f;
-                    rerollDimTimer = 0.35f;
-                }
+                currentDimFactor = 0.05f;
+                rerollDimTimer = 0.35f;
             }
 
-            // Handle pending genetic algorithm actions
-            RadarConfig::GeneticRequest genReq;
-            if (g_radarConfig.popPendingGenetic(genReq)) {
-                if (genReq.action == "mutate") {
-                    g_geneticEngine.mutate(genReq.target, genReq.scale, genReq.rate);
-                    if (g_radarConfig.ncaDimOnReroll.load()) {
-                        currentDimFactor = 0.2f;
-                        rerollDimTimer = 0.25f;
-                    }
-                } else if (genReq.action == "mutate_everything") {
-                    g_geneticEngine.mutate("everything", genReq.scale, 1.0f);
-                    if (g_radarConfig.ncaDimOnReroll.load()) {
-                        currentDimFactor = 0.1f;
-                        rerollDimTimer = 0.35f;
-                    }
-                } else if (genReq.action == "cancel" || genReq.action == "revert") {
-                    g_geneticEngine.cancel();
-                } else if (genReq.action == "reinforce" || genReq.action == "commit" || genReq.action == "keep") {
-                    g_geneticEngine.reinforce();
-                } else if (genReq.action == "rollback") {
-                    g_geneticEngine.rollback();
-                } else if (genReq.action == "reset" || genReq.action == "reset_original") {
-                    g_geneticEngine.resetToOriginal();
-                } else if (genReq.action == "reset_random" || genReq.action == "random") {
-                    g_geneticEngine.resetToRandom();
-                } else if (genReq.action == "reset_wiring") {
-                    g_geneticEngine.resetWiring();
-                }
+            // Handle pending simulation resolution request
+            RadarConfig::SimResolutionRequest simReq;
+            if (g_radarConfig.popPendingSimulationResolution(simReq)) {
+                g_simScaleMode = simReq.scaleMode;
+                g_simScale = simReq.scale;
+                setSimulationResolution(simReq.width, simReq.height, simReq.resample);
             }
-            g_radarConfig.ncaGeneration.store(g_geneticEngine.generation);
-            g_radarConfig.ncaHasCandidate.store(g_geneticEngine.hasCandidate);
-            g_radarConfig.ncaMutatedCount.store(g_geneticEngine.mutatedCount);
-            g_radarConfig.ncaWiringLinks.store(g_geneticEngine.getActiveWiredLinks());
-            g_radarConfig.ncaWiringEvents.store(g_geneticEngine.wiringEvents);
-            g_radarConfig.ncaMaxWiringStrength.store(g_geneticEngine.getMaxWiringStrength());
-
-            if (g_geneticEngine.dirty) {
-                glBindBuffer(GL_SHADER_STORAGE_BUFFER, ncaWeightBuffer);
-                glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(NcaGpuGenome), &g_geneticEngine.getActiveGenome());
-                g_geneticEngine.dirty = false;
-            }
-
-            // State analysis for PCA components and collapse/explosion detection
-            static int candidateAgeFrames = 0;
-            static int analysisFrameCounter = 0;
-            static int rerollCooldownFrames = 0;
-            analysisFrameCounter++;
-            if (rerollCooldownFrames > 0) rerollCooldownFrames--;
-
-            if (g_geneticEngine.hasCandidate) {
-                candidateAgeFrames++;
-            } else {
-                candidateAgeFrames = 0;
-                g_radarConfig.ncaRerollCount.store(0);
-                g_radarConfig.ncaLastAutoRerolled.store(false);
-            }
-
-            int graceFrames = g_radarConfig.ncaRerollGraceFrames.load();
-            bool checkCollapse = (g_geneticEngine.hasCandidate && candidateAgeFrames >= graceFrames);
 
             // Perform PCA & state analysis:
-            // Every 5 frames if PCA view (mode 13) or if candidate active, otherwise every 10 frames
-            bool needFrequentAnalysis = (g_radarConfig.ncaChannelView.load() == 13) || (g_geneticEngine.hasCandidate);
-            int analysisInterval = needFrequentAnalysis ? 5 : 10;
+            static int analysisFrameCounter = 0;
+            analysisFrameCounter++;
+            bool needFrequentAnalysis = (g_radarConfig.ncaChannelView.load() == 13);
+            int analysisInterval = needFrequentAnalysis ? 5 : 15;
 
             if (analysisFrameCounter >= analysisInterval) {
                 analysisFrameCounter = 0;
-                bool easedCriteria = g_radarConfig.ncaEasedCriteria.load();
-                auto analysis = g_stateAnalyzer.analyze(stateBuffer, TEXTURE_WIDTH, TEXTURE_HEIGHT, easedCriteria, checkCollapse);
-
-                // Auto-reroll check: if candidate active and auto-reroll enabled
-                if (g_radarConfig.ncaAutoRerollEnabled.load() && g_geneticEngine.hasCandidate) {
-                    bool shouldReroll = false;
-                    if (analysis.isExplosion && candidateAgeFrames >= 3) {
-                        shouldReroll = true;
-                    } else if (analysis.isChaos && candidateAgeFrames >= 10 && rerollCooldownFrames == 0) {
-                        shouldReroll = true;
-                    } else if (analysis.isCollapse && checkCollapse && rerollCooldownFrames == 0) {
-                        shouldReroll = true;
-                    }
-
-                    if (shouldReroll && g_geneticEngine.rerollAttempts < 25) {
-                        std::cout << "[Genetic Engine] State collapse / explosion / chaos detected: " 
-                                  << analysis.defectiveReason << ". Auto-rerolling candidate!" << std::endl;
-                        g_geneticEngine.reroll();
-                        // Only reset state if button was pressed or the state is completely dead!
-                        if (analysis.isDeadState) {
-                            resetSimulationState();
-                        } else {
-                            dimSimulationState(0.55f);
-                        }
-                        if (g_radarConfig.ncaDimOnReroll.load()) {
-                            currentDimFactor = 0.05f;
-                            rerollDimTimer = 0.45f;
-                        }
-                        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ncaWeightBuffer);
-                        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(NcaGpuGenome), &g_geneticEngine.getActiveGenome());
-                        g_geneticEngine.dirty = false;
-                        candidateAgeFrames = 0;
-                        rerollCooldownFrames = 40;
-                        g_radarConfig.ncaRerollCount.store(g_geneticEngine.rerollAttempts);
-                        g_radarConfig.ncaLastAutoRerolled.store(true);
-                        g_radarConfig.ncaMutatedCount.store(g_geneticEngine.mutatedCount);
-                    }
+                auto analysis = g_stateAnalyzer.analyze(stateBuffer, g_simWidth, g_simHeight, true, false);
+                if (analysis.isDeadState) {
+                    std::cout << "[Simulation] Dead state detected, re-seeding alive center patch..." << std::endl;
+                    resetSimulationState();
                 }
             }
 
@@ -1953,7 +1586,7 @@ int main(int argc, char* argv[]) {
                 channelCycleTimer = 0.0f;
             }
 
-            // Update dim factor for CA simulation state (smooth damping during candidate re-rolls/mutations)
+            // Update dim factor for CA simulation state (smooth damping after reset)
             if (rerollDimTimer > 0.0f) {
                 rerollDimTimer -= deltaTime;
                 targetDimFactor = 0.05f;
@@ -1961,12 +1594,8 @@ int main(int argc, char* argv[]) {
                 targetDimFactor = 1.0f;
             }
 
-            if (g_radarConfig.ncaDimOnReroll.load()) {
-                float dimSpeed = (targetDimFactor < currentDimFactor) ? 35.0f : 3.5f;
-                currentDimFactor += (targetDimFactor - currentDimFactor) * std::min(1.0f, dimSpeed * deltaTime);
-            } else {
-                currentDimFactor = 1.0f;
-            }
+            float dimSpeed = (targetDimFactor < currentDimFactor) ? 35.0f : 3.5f;
+            currentDimFactor += (targetDimFactor - currentDimFactor) * std::min(1.0f, dimSpeed * deltaTime);
             currentDimFactor = std::max(0.0f, std::min(1.0f, currentDimFactor));
             g_radarConfig.ncaViewportDim.store(currentDimFactor);
 
@@ -2021,8 +1650,19 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            glDispatchCompute((unsigned int)TEXTURE_WIDTH/10, (unsigned int)TEXTURE_HEIGHT/10, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+            // Set simulation resolution uniforms
+            currentComputeShader->setIVec2("sim_size", g_simWidth, g_simHeight);
+            currentComputeShader->setInt("sim_filtering", g_radarConfig.simFiltering.load());
+
+            // PASS 0: NCA simulation step on sim grid
+            currentComputeShader->setInt("pass_mode", 0);
+            glDispatchCompute((unsigned int)(g_simWidth + 9) / 10, (unsigned int)(g_simHeight + 9) / 10, 1);
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+            // PASS 1: Screen presentation and zero-artifact smooth Hermite resampling
+            currentComputeShader->setInt("pass_mode", 1);
+            glDispatchCompute((unsigned int)(TEXTURE_WIDTH + 9) / 10, (unsigned int)(TEXTURE_HEIGHT + 9) / 10, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
             // Render (screen quad renders raw texture without artificial screen dimming)
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);

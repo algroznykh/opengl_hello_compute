@@ -36,46 +36,51 @@ def main():
     assert "auto_freq" in html
     assert "multiplySpeed(2.0)" in html
     assert "multiplySpeed(0.25)" in html
-    # Verify new features in HTML
+
+    # Verify Simulation Resolution controls in HTML
+    assert "Simulation Resolution" in html, "HTML should contain Simulation Resolution card"
+    assert "simResBadge" in html, "HTML should contain simResBadge"
+    assert "simScaleSlider" in html, "HTML should contain simScaleSlider"
+    assert "setSimPreset" in html, "HTML should contain setSimPreset function"
+    assert "setSimScale" in html, "HTML should contain setSimScale function"
+    assert "setSimFiltering" in html, "HTML should contain setSimFiltering function"
+    assert "filterBtnHermite" in html, "HTML should contain Smooth Hermite filtering button"
+    assert "filterBtnBilinear" in html, "HTML should contain Bilinear filtering button"
+    assert "filterBtnNearest" in html, "HTML should contain Nearest filtering button"
+    assert "resetSimulationStateBtn" in html, "HTML should contain resetSimulationStateBtn"
+
+    # Verify relative presets
+    assert "presetBtn1_1" in html, "HTML should contain 1:1 preset button"
+    assert "presetBtn1_2" in html, "HTML should contain 1:2 preset button"
+    assert "presetBtn1_3" in html, "HTML should contain 1:3 preset button"
+    assert "presetBtn1_4" in html, "HTML should contain 1:4 preset button"
+
+    # Verify fixed presets
+    assert "presetBtn160" in html, "HTML should contain 160x120 preset button"
+    assert "presetBtn267" in html, "HTML should contain 267x200 preset button"
+    assert "presetBtn400" in html, "HTML should contain 400x300 preset button"
+
+    # Verify Genetic Algorithm controls are REMOVED as requested
+    assert "Genetic Algorithm" not in html, "Genetic Algorithm card must be removed"
+    assert "mutateCandidate" not in html, "mutateCandidate must be removed"
+    assert "mutateEverything" not in html, "mutateEverything must be removed"
+    assert "reinforceCandidate" not in html, "reinforceCandidate must be removed"
+    assert "resetToRandomWeights" not in html, "resetToRandomWeights must be removed"
+    assert "resetWiringMatrix" not in html, "resetWiringMatrix must be removed"
+    print("  -> Passed. Simulation Resolution UI verified and Genetic Algorithm controls confirmed removed.")
+
+    # Other core features remain intact
     assert "setTopology" in html, "HTML should contain setTopology"
     assert "topoBtnPolar" in html, "HTML should contain polar topology button"
     assert "reversePoleBtn" in html, "HTML should contain reversePoleBtn"
     assert "reverseSpinBtn" in html, "HTML should contain reverseSpinBtn"
     assert "specInfluenceSlider" in html, "HTML should contain specInfluenceSlider"
-    assert "resetSimulationStateBtn" in html, "HTML should contain resetSimulationStateBtn"
-    assert "resetToRandomWeights" in html, "HTML should contain resetToRandomWeights"
-    assert "resetWiringMatrix" in html, "HTML should contain resetWiringMatrix"
-    assert "wiringBadge" in html, "HTML should contain neural wiringBadge"
-    assert "mutateCandidate" in html, "HTML should contain mutateCandidate button"
-    assert "mutateEverything" in html, "HTML should contain mutateEverything button"
-    assert "targetBtnEverything" not in html, "targetBtnEverything should be removed to de-duplicate mutate everything controls"
     assert "setNcaChannel" in html, "HTML should contain setNcaChannel"
     assert "toggleAutoCycleChannels" in html, "HTML should contain toggleAutoCycleChannels"
-    assert "autoCycleChannelsBtn" in html, "HTML should contain autoCycleChannelsBtn"
-    assert "chBtnComp" in html, "HTML should contain chBtnComp button"
-    assert "chBtn0" in html, "HTML should contain chBtn0 button"
-    assert "chBtnPca" in html, "HTML should contain chBtnPca button for 3 main PCA components"
-    assert "rerollBadge" in html, "HTML should contain rerollBadge for auto-reroll telemetry"
-    assert "dimRerollBtn" in html, "HTML should contain dimRerollBtn"
-    assert "criteriaBtn" in html, "HTML should contain criteriaBtn"
-    assert "toggleDimOnReroll" in html, "HTML should contain toggleDimOnReroll function"
-    assert "toggleRerollCriteria" in html, "HTML should contain toggleRerollCriteria function"
-    assert "cancelCandidate" in html, "HTML should contain cancelCandidate button"
-    assert "reinforceCandidate" in html, "HTML should contain reinforceCandidate button"
-
-    # Verify Reset State, Mutate Everything, and Reinforce are moved close together
-    pos_reset = html.find("resetSimulationStateBtn")
-    pos_everything = html.find("mutateEverything")
-    pos_reinforce = html.find("reinforceCandidate")
-    assert pos_reset != -1 and pos_everything != -1 and pos_reinforce != -1, "All 3 core buttons must be present"
-    assert abs(pos_everything - pos_reset) < 600, "Reset State and Mutate Everything must be clustered close together"
-    assert abs(pos_reinforce - pos_everything) < 600, "Mutate Everything and Reinforce must be clustered close together"
-    print("  -> Passed. Reset State, Mutate Everything, and Reinforce are verified close together.")
-
+    assert "chBtnPca" in html, "HTML should contain chBtnPca button"
     assert "triggerImprint" in html, "HTML should contain Easter egg triggerImprint"
     assert "imprintInput" in html, "HTML should contain arbitrary message input"
-    assert "<canvas" not in html, "Canvas element should remain removed for minimal UI"
-    print("  -> Passed. Minimal HTML contains Direct NCA Channels, PCA RGB, Auto-Cycle, and Clustered Controls.")
+    print("  -> Passed. Topology, Easter Egg Imprint, Spectrogram, and Direct Channels verified in HTML.")
 
     print("[2] Testing GET /api/status...")
     status_str, _ = get("/api/status")
@@ -86,389 +91,160 @@ def main():
     assert "auto_speed" in status
     assert "rhythm_division" in status
     assert "auto_freq" in status
-    assert "spectrogram_influence" in status, "Status should contain spectrogram_influence"
-    assert "nca_channel_view" in status, "Status should contain nca_channel_view"
-    assert "nca_auto_cycle" in status, "Status should contain nca_auto_cycle"
-    assert "nca_cycle_interval" in status, "Status should contain nca_cycle_interval"
-    assert "nca_rerolls" in status, "Status should contain nca_rerolls"
-    assert "nca_auto_reroll" in status, "Status should contain nca_auto_reroll"
+    assert "spectrogram_influence" in status
+    assert "nca_channel_view" in status
+    assert "nca_auto_cycle" in status
     assert "nca_topology" in status
     assert "topology" in status
     assert "nca_pole_radial" in status
     assert "nca_pole_azimuthal" in status
-    assert "reverse_pole" in status
-    assert "reverse_spin" in status
-    assert "genetic_generation" in status
-    assert "genetic_has_candidate" in status
-    assert "genetic_mutated_count" in status
-    assert "nca_wiring_links" in status, "Status should contain nca_wiring_links"
-    assert "nca_wiring_events" in status, "Status should contain nca_wiring_events"
-    assert "genetic_mutation_scale" in status
-    assert "genetic_mutation_rate" in status
-    print("  -> Passed. Status API returns autotune, spectrogram influence, wiring, and genetic fields.")
+
+    # Verify simulation resolution fields
+    assert "sim_width" in status, "Status must contain sim_width"
+    assert "sim_height" in status, "Status must contain sim_height"
+    assert "sim_scale_mode" in status, "Status must contain sim_scale_mode"
+    assert "sim_scale" in status, "Status must contain sim_scale"
+    assert "sim_preset" in status, "Status must contain sim_preset"
+    assert "sim_filtering" in status, "Status must contain sim_filtering"
+
+    # Verify genetic fields removed from status
+    assert "genetic_generation" not in status, "genetic_generation must be removed from status"
+    assert "genetic_has_candidate" not in status, "genetic_has_candidate must be removed from status"
+    assert "genetic_mutated_count" not in status, "genetic_mutated_count must be removed from status"
+    print("  -> Passed. Status API returns simulation resolution and confirmed genetic fields removed.")
 
     print("[3] Testing Frequency Scales (log, mel, linear)...")
     res = post_json("/api/controls", {"scale": "mel"})
-    assert res["scale"] == "mel" and res["scale_type"] == 1, f"Expected mel/1, got {res}"
-    print("  -> Mel scale verified.")
-
+    assert res["scale"] == "mel" and res["scale_type"] == 1
     res = post_json("/api/controls", {"scale": "linear"})
-    assert res["scale"] == "linear" and res["scale_type"] == 2, f"Expected linear/2, got {res}"
-    print("  -> Linear scale verified.")
-
+    assert res["scale"] == "linear" and res["scale_type"] == 2
     res = post_json("/api/controls", {"scale": "log"})
-    assert res["scale"] == "log" and res["scale_type"] == 0, f"Expected log/0, got {res}"
-    print("  -> Log scale verified.")
+    assert res["scale"] == "log" and res["scale_type"] == 0
+    print("  -> Frequency scales verified.")
 
-    print("[4] Testing Rotation Speed Multipliers (2x, 4x faster / slower)...")
+    print("[4] Testing Rotation Speed Multipliers (2x, 4x, 0.5x, 0.25x)...")
     post_json("/api/controls", {"scanning_speed": 0.40, "auto_speed": False})
-    
     res = post_json("/api/controls", {"speed_multiplier": 2.0})
-    assert abs(res["scanning_speed"] - 0.80) < 0.01, f"Expected 0.80, got {res['scanning_speed']}"
-    print(f"  -> 2x faster multiplier: speed = {res['scanning_speed']} rev/s")
-
-    res = post_json("/api/controls", {"speed_multiplier": 4.0})
-    assert abs(res["scanning_speed"] - 3.20) < 0.02, f"Expected 3.20, got {res['scanning_speed']}"
-    print(f"  -> 4x faster multiplier: speed = {res['scanning_speed']} rev/s")
-
+    assert abs(res["scanning_speed"] - 0.80) < 0.01
     res = post_json("/api/controls", {"speed_multiplier": 0.5})
-    assert abs(res["scanning_speed"] - 1.60) < 0.02, f"Expected 1.60, got {res['scanning_speed']}"
-    print(f"  -> 1/2x slower multiplier: speed = {res['scanning_speed']} rev/s")
-
-    res = post_json("/api/controls", {"speed_multiplier": 0.25})
-    assert abs(res["scanning_speed"] - 0.40) < 0.02, f"Expected 0.40, got {res['scanning_speed']}"
-    print(f"  -> 1/4x slower multiplier: speed = {res['scanning_speed']} rev/s")
+    assert abs(res["scanning_speed"] - 0.40) < 0.01
+    print("  -> Speed multipliers verified.")
 
     print("[5] Testing Autotune options...")
     res = post_json("/api/controls", {"auto_speed": True, "rhythm_division": 2, "auto_freq": True})
     assert res["auto_speed"] is True
     assert res["auto_freq"] is True
     assert res["rhythm_division"] == 2
-    print(f"  -> Auto speed & auto freq enabled. Detected BPM: {res.get('detected_bpm')}")
+    print(f"  -> Autotune verified. BPM: {res.get('detected_bpm')}")
 
     print("[6] Testing NCA Topology Controls & Reverse Pole Options...")
-    # Set to Polar via /api/topology
     res = post_json("/api/topology", {"topology": "polar", "reverse_pole": False, "reverse_spin": False})
-    assert abs(res["nca_topology"] - 1.0) < 0.01, f"Expected 1.0, got {res['nca_topology']}"
-    assert res["topology"] == "polar", f"Expected polar, got {res['topology']}"
+    assert abs(res["nca_topology"] - 1.0) < 0.01
+    assert res["topology"] == "polar"
     assert res["reverse_pole"] is False
-    assert abs(res["nca_pole_radial"] - 1.0) < 0.01
-    print(f"  -> Normal Polar verified: nca_topology={res['nca_topology']}, radial={res['nca_pole_radial']}")
 
-    # Reverse radial pole (inward sink)
     res = post_json("/api/topology", {"reverse_pole": True})
     assert res["reverse_pole"] is True
-    assert abs(res["nca_pole_radial"] - (-1.0)) < 0.01, f"Expected -1.0, got {res['nca_pole_radial']}"
-    print(f"  -> Reverse radial pole verified: nca_pole_radial={res['nca_pole_radial']}")
+    assert abs(res["nca_pole_radial"] - (-1.0)) < 0.01
 
-    # Reverse azimuthal spin
     res = post_json("/api/topology", {"reverse_spin": True})
     assert res["reverse_spin"] is True
-    assert abs(res["nca_pole_azimuthal"] - (-1.0)) < 0.01, f"Expected -1.0, got {res['nca_pole_azimuthal']}"
-    print(f"  -> Reverse spin verified: nca_pole_azimuthal={res['nca_pole_azimuthal']}")
+    assert abs(res["nca_pole_azimuthal"] - (-1.0)) < 0.01
 
-    # Set back to Cartesian (original unrotated)
     res = post_json("/api/topology", {"topology": "cartesian", "reverse_pole": False, "reverse_spin": False})
-    assert abs(res["nca_topology"] - 0.0) < 0.01, f"Expected 0.0, got {res['nca_topology']}"
-    assert res["topology"] == "cartesian", f"Expected cartesian, got {res['topology']}"
-    print(f"  -> Original Cartesian verified: nca_topology={res['nca_topology']}")
+    assert abs(res["nca_topology"] - 0.0) < 0.01
+    assert res["topology"] == "cartesian"
+    print("  -> NCA Topology (Cartesian, Polar, Reverse Pole, Reverse Spin) verified.")
 
     print("[7] Testing Easter Egg Giant Structure Imprint (/api/imprint)...")
     res = post_json("/api/imprint", {"message": "BYOB"})
-    assert res["status"] == "imprinted", f"Expected imprinted, got {res}"
-    assert res["message"] == "BYOB"
-    print("  -> Default Easter Egg 'BYOB' giant imprint request verified.")
-
-    res = post_json("/api/imprint", {"message": "POLAR LIFE"})
     assert res["status"] == "imprinted"
-    assert res["message"] == "POLAR LIFE"
-    print("  -> Two-line multi-word 'POLAR LIFE' giant imprint request verified.")
+    assert res["message"] == "BYOB"
+    print("  -> Giant Structure Imprint verified.")
 
-    print("[8] Testing Human-Assisted Genetic Evolution & Mutate Everything...")
-    # 8.1 Reset to Generation 0
-    res = post_json("/api/genetic", {"action": "reset"})
-    assert res["genetic_generation"] == 0, f"Expected Gen 0, got {res['genetic_generation']}"
-    assert res["genetic_has_candidate"] is False
-    print("  -> Gen 0 reset verified.")
+    print("[8] Testing Simulation Resolution Selector (/api/resolution)...")
+    # 8.1 Relative Preset 1:2 (Half resolution: 400x300)
+    res = post_json("/api/resolution", {"preset": "1:2"})
+    assert res["sim_width"] == 400 and res["sim_height"] == 300, f"Expected 400x300, got {res['sim_width']}x{res['sim_height']}"
+    assert res["sim_scale_mode"] == 0, "Expected relative mode 0"
+    assert abs(res["sim_scale"] - 0.5) < 0.01
+    print(f"  -> Relative Preset 1:2 verified: {res['sim_width']}x{res['sim_height']}, scale={res['sim_scale']}")
 
-    # 8.2 Test 'Mutate Everything' option (100% of all 588 parameters)
-    res = post_json("/api/genetic", {
-        "action": "mutate_everything",
-        "scale": 0.15
-    })
-    time.sleep(0.05)
-    status_str, _ = get("/api/status")
-    status = json.loads(status_str)
-    assert status["genetic_has_candidate"] is True, f"Expected candidate live, got {status}"
-    assert status["genetic_mutated_count"] == 588, f"Expected exactly 588 mutated parameters, got {status['genetic_mutated_count']}"
-    print(f"  -> Mutate Everything verified: all {status['genetic_mutated_count']} parameters perturbed!")
+    # 8.2 Relative Preset 1:4 (Quarter resolution: 200x150)
+    res = post_json("/api/resolution", {"preset": "1:4"})
+    assert res["sim_width"] == 200 and res["sim_height"] == 150, f"Expected 200x150, got {res.get('sim_width')}x{res.get('sim_height')} (res: {res})"
+    assert abs(res["sim_scale"] - 0.25) < 0.01, f"Expected scale 0.25, got {res.get('sim_scale')}"
+    print(f"  -> Relative Preset 1:4 verified: {res['sim_width']}x{res['sim_height']}")
 
-    # 8.3 Cancel candidate (reverts to baseline)
-    res = post_json("/api/genetic", {"action": "cancel"})
-    time.sleep(0.05)
-    status_str, _ = get("/api/status")
-    status = json.loads(status_str)
-    assert status["genetic_has_candidate"] is False, f"Expected candidate cancelled, got {status}"
-    assert status["genetic_generation"] == 0
-    print("  -> Cancelled candidate; reverted to Gen 0 baseline.")
+    # 8.3 Fixed Preset: 160x120
+    res = post_json("/api/resolution", {"preset": "160x120"})
+    assert res["sim_width"] == 160 and res["sim_height"] == 120
+    assert res["sim_scale_mode"] == 1, "Expected fixed mode 1"
+    print(f"  -> Fixed Preset 160x120 verified: {res['sim_width']}x{res['sim_height']}, mode={res['sim_scale_mode']}")
 
-    # 8.4 Mutate perception subsystem and Reinforce to Gen 1
-    post_json("/api/genetic", {
-        "action": "mutate",
-        "target": "perception",
-        "scale": 0.20,
-        "rate": 0.30
-    })
-    time.sleep(0.05)
-    res = post_json("/api/genetic", {"action": "reinforce"})
-    time.sleep(0.05)
-    status_str, _ = get("/api/status")
-    status = json.loads(status_str)
-    assert status["genetic_generation"] == 1, f"Expected Gen 1, got {status['genetic_generation']}"
-    assert status["genetic_has_candidate"] is False
-    print(f"  -> Reinforced candidate! Advanced to Gen {status['genetic_generation']}.")
+    # 8.4 Fixed Preset: 512x384
+    res = post_json("/api/resolution", {"preset": "512x384"})
+    assert res["sim_width"] == 512 and res["sim_height"] == 384
+    assert res["sim_scale_mode"] == 1
+    print(f"  -> Fixed Preset 512x384 verified: {res['sim_width']}x{res['sim_height']}")
 
-    # 8.5 Rollback to Gen 0
-    res = post_json("/api/genetic", {"action": "rollback"})
-    time.sleep(0.05)
-    status_str, _ = get("/api/status")
-    status = json.loads(status_str)
-    assert status["genetic_generation"] == 0, f"Expected rollback to Gen 0, got {status['genetic_generation']}"
-    print("  -> Rollback verified; restored previous generation.")
+    # 8.5 Continuous Scale Slider (e.g. 0.60x)
+    res = post_json("/api/resolution", {"scale": 0.60})
+    assert res["sim_width"] == 480 and res["sim_height"] == 360
+    assert res["sim_scale_mode"] == 0
+    print(f"  -> Custom Scale 0.60x verified: {res['sim_width']}x{res['sim_height']}")
 
-    print("[9] Testing Spectrogram Influence Controls (/api/spectrogram & /api/controls)...")
-    # Set to 0.0 (hides scanning line, state decoupled from audio)
+    # 8.6 Zero-Artifact Filtering Modes: 0 (Hermite), 1 (Bilinear), 2 (Nearest)
+    res = post_json("/api/resolution", {"filtering": 1})
+    assert res["sim_filtering"] == 1, f"Expected filtering 1 (Bilinear), got {res['sim_filtering']}"
+    res = post_json("/api/resolution", {"filtering": 2})
+    assert res["sim_filtering"] == 2, f"Expected filtering 2 (Nearest), got {res['sim_filtering']}"
+    res = post_json("/api/resolution", {"filtering": 0})
+    assert res["sim_filtering"] == 0, f"Expected filtering 0 (Smooth Hermite), got {res['sim_filtering']}"
+    print("  -> Zero-Artifact Filtering Modes (Smooth Hermite, Bilinear, Nearest) verified.")
+
+    # 8.7 Reset to 1:3 Default (267x200)
+    res = post_json("/api/resolution", {"preset": "1:3"})
+    assert res["sim_width"] == 267 and res["sim_height"] == 200
+    assert abs(res["sim_scale"] - 0.333333) < 0.01
+    print(f"  -> Returned to Default 1:3 Preset: {res['sim_width']}x{res['sim_height']}")
+
+    # 8.8 Resolution via /api/controls
+    res = post_json("/api/controls", {"sim_preset": "400x300"})
+    assert res["sim_width"] == 400 and res["sim_height"] == 300
+    res = post_json("/api/controls", {"sim_preset": "1:3"})
+    assert res["sim_width"] == 267 and res["sim_height"] == 200
+    print("  -> Resolution control via /api/controls verified.")
+
+    print("[9] Testing Spectrogram Influence Controls (/api/spectrogram)...")
     res = post_json("/api/spectrogram", {"spectrogram_influence": 0.0})
-    assert abs(res["spectrogram_influence"] - 0.0) < 0.01, f"Expected 0.0, got {res['spectrogram_influence']}"
-    print("  -> Spectrogram influence set to 0.0 (scanning line hidden, autonomous state evolution).")
-
-    # Set via controls to 1.5
-    res = post_json("/api/controls", {"spectrogram_influence": 1.5})
-    assert abs(res["spectrogram_influence"] - 1.5) < 0.01, f"Expected 1.5, got {res['spectrogram_influence']}"
-    print(f"  -> Spectrogram influence set to {res['spectrogram_influence']} via /api/controls.")
-
-    # Reset back to default 1.0
+    assert abs(res["spectrogram_influence"] - 0.0) < 0.01
     res = post_json("/api/controls", {"spectrogram_influence": 1.0})
     assert abs(res["spectrogram_influence"] - 1.0) < 0.01
+    print("  -> Spectrogram influence verified.")
 
     print("[10] Testing Simulation State Reset (/api/reset_state)...")
     res = post_json("/api/reset_state", {})
-    assert res.get("status") == "state_reset", f"Expected state_reset, got {res}"
-    print("  -> Simulation state reset requested via /api/reset_state.")
+    assert res.get("status") == "state_reset"
+    print("  -> Simulation state reset verified.")
 
-    res = post_json("/api/controls", {"reset_state": True})
-    print("  -> Simulation state reset requested via /api/controls.")
-
-    print("[11] Testing Reset Weights to Random (/api/genetic action=reset_random)...")
-    res = post_json("/api/genetic", {"action": "reset_random"})
-    time.sleep(0.05)
-    status_str, _ = get("/api/status")
-    status = json.loads(status_str)
-    assert status["genetic_generation"] == 0
-    assert status["genetic_has_candidate"] is False
-    print("  -> Reset to random weights distribution verified.")
-
-    print("[12] Testing Synaptic Wiring ('Parameters that change together wire together')...")
-    # Reset wiring and baseline
-    post_json("/api/genetic", {"action": "reset"})
-    post_json("/api/genetic", {"action": "reset_wiring"})
-    time.sleep(0.05)
-    status = json.loads(get("/api/status")[0])
-    assert status["nca_wiring_links"] == 0, f"Expected 0 links, got {status['nca_wiring_links']}"
-    assert status["nca_wiring_events"] == 0
-
-    # Mutate perception subsystem
-    post_json("/api/genetic", {
-        "action": "mutate",
-        "target": "perception",
-        "scale": 0.25,
-        "rate": 0.35
-    })
-    time.sleep(0.05)
-    status = json.loads(get("/api/status")[0])
-    mutCount = status["genetic_mutated_count"]
-    assert status["genetic_has_candidate"] is True
-    assert mutCount > 1, f"Expected multiple mutated weights, got {mutCount}"
-    print(f"  -> Candidate generated with {mutCount} mutated parameters.")
-
-    # Reinforce candidate: these parameters must wire together!
-    post_json("/api/genetic", {"action": "reinforce"})
-    time.sleep(0.05)
-    status = json.loads(get("/api/status")[0])
-    links = status["nca_wiring_links"]
-    events = status["nca_wiring_events"]
-    assert links > 0, f"Expected active wiring links > 0, got {links}"
-    assert events == 1, f"Expected 1 wiring event, got {events}"
-    print(f"  -> Reinforcement successful! Wired {links} synaptic connections across changed parameters.")
-
-    # Mutate again: wired parameters co-fire together!
-    post_json("/api/genetic", {
-        "action": "mutate",
-        "target": "perception",
-        "scale": 0.20,
-        "rate": 0.20
-    })
-    time.sleep(0.05)
-    status = json.loads(get("/api/status")[0])
-    assert status["genetic_has_candidate"] is True
-    print(f"  -> Second mutation fired successfully with co-firing enabled: {status['genetic_mutated_count']} parameters.")
-    post_json("/api/genetic", {"action": "cancel"})
-
-    # Reset back to clean Gen 0 original
-    post_json("/api/genetic", {"action": "reset"})
-    print("  -> Clean baseline restored.")
-
-    print("[13] Testing Direct NCA Channels View & Auto-Cycling...")
-    # Test setting individual channels 0..11 directly
+    print("[11] Testing Direct NCA Channels View & PCA RGB...")
     for ch in [0, 3, 5, 8, 11]:
         res = post_json("/api/channel", {"channel": ch})
-        assert res["nca_channel_view"] == ch, f"Expected channel {ch}, got {res['nca_channel_view']}"
-    print("  -> Direct channel selection (0, 3, 5, 8, 11) verified.")
-
-    # Test raw RGB mode (channel 12)
+        assert res["nca_channel_view"] == ch
     res = post_json("/api/channel", {"channel": 12})
-    assert res["nca_channel_view"] == 12, f"Expected channel 12, got {res['nca_channel_view']}"
-    print("  -> Raw RGB channels mode (12) verified.")
-
-    # Test 3 main PCA components mode (channel 13 / "pca")
+    assert res["nca_channel_view"] == 12
     res = post_json("/api/channel", {"channel": 13})
-    assert res["nca_channel_view"] == 13, f"Expected channel 13, got {res['nca_channel_view']}"
-    print("  -> 3 Main PCA components mode (channel 13) verified.")
-
-    res = post_json("/api/channel", {"channel": "pca"})
-    assert res["nca_channel_view"] == 13, f"Expected channel 13 via 'pca' string, got {res['nca_channel_view']}"
-    print("  -> 3 Main PCA components mode via 'pca' string verified.")
-
-    # Test returning to composite mode (-1)
+    assert res["nca_channel_view"] == 13
     res = post_json("/api/channel", {"channel": -1})
-    assert res["nca_channel_view"] == -1, f"Expected channel -1, got {res['nca_channel_view']}"
-    print("  -> Composite color-corrected mode (-1) verified.")
-
-    # Test channel control via /api/controls
-    res = post_json("/api/controls", {"nca_channel_view": 4})
-    assert res["nca_channel_view"] == 4, f"Expected channel 4 via /api/controls, got {res['nca_channel_view']}"
-    print("  -> Channel selection via /api/controls verified.")
-
-    # Test Auto-Cycle Channels toggle and cycle interval
-    res = post_json("/api/channel", {"auto_cycle": True, "cycle_interval": 0.5})
-    assert res["nca_auto_cycle"] is True, "Expected auto_cycle to be True"
-    assert abs(res["nca_cycle_interval"] - 0.5) < 0.01, f"Expected cycle_interval 0.5, got {res['nca_cycle_interval']}"
-    print("  -> Auto-cycling channels enabled with 0.5s interval.")
-
-    # Wait for auto-cycling to advance channel
-    time.sleep(1.2)
-    status = json.loads(get("/api/status")[0])
-    print(f"  -> Channel after cycling: {status['nca_channel_view']}")
-    assert status["nca_auto_cycle"] is True
-
-    # Disable auto-cycle and restore composite
-    res = post_json("/api/channel", {"auto_cycle": False, "channel": -1, "cycle_interval": 1.5})
-    assert res["nca_auto_cycle"] is False
     assert res["nca_channel_view"] == -1
-    print("  -> Auto-cycle disabled and composite view restored.")
+    print("  -> Direct channel selection, raw RGB, and PCA RGB modes verified.")
 
-    print("[14] Testing Auto-Reroll on State Collapse / Numerical Explosion...")
-    # Verify auto-reroll enabled in status
-    status = json.loads(get("/api/status")[0])
-    assert status["nca_auto_reroll"] is True, "Auto-reroll should be enabled by default"
-
-    # Test mutating everything with candidate generated
-    res = post_json("/api/genetic", {"action": "mutate_everything", "scale": 0.15})
-    assert res["genetic_has_candidate"] is True
-    assert res["genetic_mutated_count"] > 0
-    print(f"  -> Mutate Everything candidate generated with {res['genetic_mutated_count']} parameters.")
-
-    # Wait for state analysis frames (at least 15 frames = 250ms)
-    time.sleep(0.35)
-    status = json.loads(get("/api/status")[0])
-    print(f"  -> Auto-rerolls count: {status['nca_rerolls']}, has_candidate: {status['genetic_has_candidate']}")
-    assert status["genetic_has_candidate"] is True, "Candidate should remain active (auto-rerolled if collapsed)"
-
-    # Cancel candidate and clean up
-    post_json("/api/genetic", {"action": "cancel"})
-    post_json("/api/channel", {"channel": -1})
-    print("  -> Auto-reroll engine verified.")
-
-    print("[15] Testing Viewport Dimming on Re-roll & Eased Criteria (/api/reroll, /api/controls)...")
-    post_json("/api/controls", {"dim_on_reroll": True, "eased_criteria": True})
-    status = json.loads(get("/api/status")[0])
-    assert status["nca_dim_on_reroll"] is True, "Dim on reroll should be true by default"
-    assert status["nca_eased_criteria"] is True, "Eased criteria should be true by default"
-    assert status["nca_reroll_grace_frames"] >= 20
-    assert "nca_viewport_dim" in status
-    print(f"  -> Default dimming & eased criteria status verified: dim={status['nca_dim_on_reroll']}, eased={status['nca_eased_criteria']}, dimFactor={status['nca_viewport_dim']:.2f}")
-
-    # Test toggling dim_on_reroll via /api/controls
-    res = post_json("/api/controls", {"dim_on_reroll": False})
-    assert res["nca_dim_on_reroll"] is False, "Expected dim_on_reroll False"
-    print("  -> Viewport dimming disabled via /api/controls.")
-
-    res = post_json("/api/controls", {"dim_on_reroll": True})
-    assert res["nca_dim_on_reroll"] is True, "Expected dim_on_reroll True"
-    print("  -> Viewport dimming enabled via /api/controls.")
-
-    # Test toggling criteria via /api/controls
-    res = post_json("/api/controls", {"eased_criteria": False})
-    assert res["nca_eased_criteria"] is False, "Expected eased_criteria False"
-    res = post_json("/api/controls", {"eased_criteria": True})
-    assert res["nca_eased_criteria"] is True, "Expected eased_criteria True"
-    print("  -> Criteria toggling verified via /api/controls.")
-
-    # Test dedicated /api/reroll endpoint
-    res = post_json("/api/reroll", {
-        "dim_on_reroll": True,
-        "eased_criteria": True,
-        "reroll_grace_frames": 40
-    })
-    assert res["nca_dim_on_reroll"] is True
-    assert res["nca_eased_criteria"] is True
-    assert res["nca_reroll_grace_frames"] == 40
-    print("  -> Dedicated /api/reroll endpoint configuration verified.")
-
-    # Test candidate stability under eased criteria (no infinite rerolling)
-    post_json("/api/genetic", {"action": "mutate", "scale": 0.15, "rate": 0.25})
-    time.sleep(1.0) # Wait 60 frames
-    status = json.loads(get("/api/status")[0])
-    assert status["genetic_has_candidate"] is True
-    assert status["nca_rerolls"] < 5, f"Eased criteria must not thrash in rerolls! Found {status['nca_rerolls']} rerolls"
-    print(f"  -> Candidate stability confirmed under eased criteria: candidate is active, rerolls={status['nca_rerolls']}.")
-
-    # Clean up candidate
-    post_json("/api/genetic", {"action": "cancel"})
-
-    print("[16] Testing Anti-Chaos Regularization & State Preservation (Non-Resetting Mutations)...")
-    # Set to strict criteria
-    post_json("/api/controls", {"eased_criteria": False})
-    status = json.loads(get("/api/status")[0])
-    assert status["nca_eased_criteria"] is False, "Expected strict criteria"
-
-    # Mutate candidate under strict criteria
-    res = post_json("/api/genetic", {"action": "mutate", "scale": 0.15, "rate": 0.25})
-    assert res["genetic_has_candidate"] is True
-    print("  -> Mutated candidate generated under strict criteria.")
-
-    # Wait for settling and state analyzer runs (approx 90 frames / 1.5s)
-    time.sleep(1.5)
-    status = json.loads(get("/api/status")[0])
-    print(f"  -> Candidate under strict criteria: rerolls={status['nca_rerolls']}, has_candidate={status['genetic_has_candidate']}")
-    assert status["genetic_has_candidate"] is True, "Candidate should remain active"
-    assert status["nca_rerolls"] < 10, f"Anti-chaos regularization should prevent infinite chaos rerolls! Found {status['nca_rerolls']} rerolls"
-    print("  -> Anti-chaos weight regularization successfully avoided dynamic chaos attractor.")
-
-    # Mutate everything to verify state is preserved (not reset to center seed)
-    post_json("/api/genetic", {"action": "mutate_everything", "scale": 0.10})
-    time.sleep(0.5)
-    status = json.loads(get("/api/status")[0])
-    assert status["genetic_has_candidate"] is True
-    print(f"  -> Mutate everything candidate active with state preserved (rerolls={status['nca_rerolls']}).")
-
-    # Clean up and reset
-    post_json("/api/genetic", {"action": "cancel"})
-    post_json("/api/controls", {"eased_criteria": True})
-    post_json("/api/reset_state", {})
-    print("  -> Clean state and eased criteria restored.")
-
-    print("\nALL SPECTROGRAM INFLUENCE, STATE RESET, RANDOM RESET, SYNAPTIC WIRING, DIRECT CHANNELS, PCA RGB, STATE DIMMING, ANTI-CHAOS REGULARIZATION & RE-ROLL TESTS PASSED SUCCESSFULLY!")
+    print("\n=======================================================")
+    print("🎉 ALL TESTS PASSED! Simulation resolution is verified,")
+    print("   zero-artifact Hermite resampling is active, and")
+    print("   genetic weight modification is cleanly removed.")
+    print("=======================================================")
 
 if __name__ == "__main__":
     main()

@@ -30,6 +30,9 @@ uniform float pca_pc3[12];            // 3rd Principal Component (Blue)
 uniform float pca_mean[12];           // 12-channel mean vector
 uniform vec3 pca_std;                 // Standard deviations of top 3 PCs for contrast normalization
 uniform float nca_state_dim;          // Direct NCA state damping / dimming factor (0.0 to 1.0)
+uniform ivec2 sim_size;               // Simulation resolution (width, height)
+uniform int sim_filtering;            // 0 = Smooth Hermite, 1 = Bilinear, 2 = Nearest
+uniform int pass_mode;                // 0 = Simulation step, 1 = Screen presentation & continuous resampling
 
 // Uniforms buffer - binding 4 (avoiding conflict with image bindings)
 layout(std140, binding = 4) uniform Uniforms {
@@ -77,10 +80,9 @@ const uint N = 12u;
 const float S = 5000.0;
 uint D = 1; // dilation
 
-// Simulation size
-uint FACTOR = 3;
-uint SW = imageSize(outputTexture).x / FACTOR;
-uint SH = imageSize(outputTexture).y / FACTOR;
+// Simulation grid dimensions (initialized per pass in main)
+uint SW = 267u;
+uint SH = 200u;
 
 // Global variable for current index
 ivec2 current_index;
@@ -138,9 +140,11 @@ void set_xy(uint x, uint y, float[12] cs) {
 }
 
 float R(int dx, int dy, uint c) {
-    uint x = (uint(current_index.x + dx*D) + SW) % SW;
-    uint y = (uint(current_index.y + dy*D) + SH) % SH;
-    return get_xyc(x, y, c);
+    int nx = (current_index.x + dx * int(D)) % int(SW);
+    if (nx < 0) nx += int(SW);
+    int ny = (current_index.y + dy * int(D)) % int(SH);
+    if (ny < 0) ny += int(SH);
+    return get_xyc(uint(nx), uint(ny), c);
 }
 
 
@@ -267,211 +271,54 @@ vec4 camlap(ivec2 coord) {
     return res;
 }
 
-vec4 bilinearInterp(vec2 coord) {
-    vec2 f = fract(coord);
-    ivec2 i = ivec2(floor(coord));
-    
-    // Clamp coordinates to texture bounds
-    ivec2 size = imageSize(outputTexture) - 1;
-    
-    vec4 tl = imageLoad(outputTexture, clamp(i, ivec2(0), size));
-    vec4 tr = imageLoad(outputTexture, clamp(i + ivec2(1, 0), ivec2(0), size));
-    vec4 bl = imageLoad(outputTexture, clamp(i + ivec2(0, 1), ivec2(0), size));
-    vec4 br = imageLoad(outputTexture, clamp(i + ivec2(1, 1), ivec2(0), size));
-    
-    vec4 top = mix(tl, tr, f.x);
-    vec4 bottom = mix(bl, br, f.x);
-    
-    return mix(top, bottom, f.y);
-}
-
-vec4 interp(ivec2 coord, int n) {
-    vec4 res = vec4(0.0);
-    for (int i = -n; i < n+1; i++) {
-        for (int j = -n; j < n+1; j++) {
-            ivec2 sampleCoord = coord + ivec2(i, j);
-            sampleCoord = clamp(sampleCoord, ivec2(0), imageSize(outputTexture) - 1);
-            res += imageLoad(outputTexture, sampleCoord) ;
+vec4 get_cell_color(uint x, uint y) {
+    float[12] states_out = get_xy(x, y);
+    vec4 col;
+    if (nca_channel_view >= 0 && nca_channel_view < 12) {
+        // Direct channel view w/o color correction (raw activation magnitude in grayscale)
+        float chVal = clamp(abs(states_out[nca_channel_view]), 0.0, 1.5);
+        col = vec4(chVal, chVal, chVal, 1.0);
+    } else if (nca_channel_view == 12) {
+        // Direct raw RGB channels (0, 1, 2) w/o color correction
+        col = vec4(clamp(abs(states_out[0]), 0.0, 1.5),
+                   clamp(abs(states_out[1]), 0.0, 1.5),
+                   clamp(abs(states_out[2]), 0.0, 1.5), 1.0);
+    } else if (nca_channel_view == 13) {
+        // 3 main PCA components projected to RGB (w/o color correction)
+        float r_proj = 0.0;
+        float g_proj = 0.0;
+        float b_proj = 0.0;
+        for (int c = 0; c < 12; c++) {
+            float centered = states_out[c] - pca_mean[c];
+            r_proj += centered * pca_pc1[c];
+            g_proj += centered * pca_pc2[c];
+            b_proj += centered * pca_pc3[c];
         }
+        float r_val = clamp(r_proj / (2.5 * max(0.05, pca_std.x)) + 0.5, 0.0, 1.0);
+        float g_val = clamp(g_proj / (2.5 * max(0.05, pca_std.y)) + 0.5, 0.0, 1.0);
+        float b_val = clamp(b_proj / (2.5 * max(0.05, pca_std.z)) + 0.5, 0.0, 1.0);
+        col = vec4(r_val, g_val, b_val, 1.0);
+    } else {
+        // Default composite with color correction
+        col = vec4(states_out[3], states_out[0], states_out[3], states_out[3]);
+        col.g *= 0.5555;
+        col *= 0.9;
     }
-    return res/pow(n+2, 2.);
+    return col;
 }
-
-/* vec4 sampleBilinear(image2D img, vec2 uv) {
-    vec2 texSize = vec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
-    vec2 pixelCoord = uv * texSize - 0.5;
-    vec2 floorCoord = floor(pixelCoord);
-    vec2 fracCoord = pixelCoord - floorCoord;
-    
-    ivec2 i00 = ivec2(floorCoord);
-    ivec2 i10 = i00 + ivec2(1, 0);
-    ivec2 i01 = i00 + ivec2(0, 1);
-    ivec2 i11 = i00 + ivec2(1, 1);
-    
-    // Handle wrapping or clamping
-    i00 = clamp(i00, ivec2(0), ivec2(texSize) - 1);
-    i10 = clamp(i10, ivec2(0), ivec2(texSize) - 1);
-    i01 = clamp(i01, ivec2(0), ivec2(texSize) - 1);
-    i11 = clamp(i11, ivec2(0), ivec2(texSize) - 1);
-    
-    vec4 s00 = imageLoad(img, i00);
-    vec4 s10 = imageLoad(img, i10);
-    vec4 s01 = imageLoad(img, i01);
-    vec4 s11 = imageLoad(img, i11);
-    
-    vec4 s0 = mix(s00, s10, fracCoord.x);
-    vec4 s1 = mix(s01, s11, fracCoord.x);
-    
-    return mix(s0, s1, fracCoord.y);
-}
-
-vec2 cart(vec2 polar) {
-    float angle = polar.y * (2.0 * 3.14159) - 3.14159;  
-    vec2 centered;
-    centered.x = polar.x * cos(angle);
-    centered.y = polar.x * sin(angle);
-
-    // Scale back from [-1,1] to [-0.5,0.5] and center at 0.5
-    centered /= 2.0;
-    vec2 cart = centered + 0.5;
-    return cart;
-}
-
-vec4 sampleLoG(image2D img, vec2 uv) {
-    vec2 texSize = vec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
-    vec2 pixelCoord = uv * texSize;
-    ivec2 coord = ivec2(pixelCoord);
-    
-    // 5x5 Laplacian of Gaussian kernel (approximation)
-    // Values normalized for unity gain
-    float kernel[25] = float[25](
-        0.0,  0.0, -1.0,  0.0,  0.0,
-        0.0, -1.0, -2.0, -1.0,  0.0,
-       -1.0, -2.0, 16.0, -2.0, -1.0,
-        0.0, -1.0, -2.0, -1.0,  0.0,
-        0.0,  0.0, -1.0,  0.0,  0.0
-    );
-    
-    vec4 result = vec4(0.0);
-    
-    for (int y = -2; y <= 2; y++) {
-        for (int x = -2; x <= 2; x++) {
-            ivec2 sampleCoord = coord + ivec2(x, y);
-            sampleCoord = clamp(sampleCoord, ivec2(0), ivec2(texSize) - 1);
-            
-            int kernelIndex = (y + 2) * 5 + (x + 2);
-            result += imageLoad(img, sampleCoord) * kernel[kernelIndex];
-        }
-    }
-    
-    return result / 16.0; // Normalize
-} */
 
 void main() {
+    SW = uint(sim_size.x > 0 ? sim_size.x : (imageSize(outputTexture).x / 3));
+    SH = uint(sim_size.y > 0 ? sim_size.y : (imageSize(outputTexture).y / 3));
     ivec2 screen_size = imageSize(outputTexture);
-    ivec2 fragCoord = ivec2(gl_GlobalInvocationID.xy);
-	ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 imgSize = screen_size;
-    vec2 uv = (vec2(texelCoord.xy) + 0.5) / vec2(screen_size);
-    vec2 centered = (uv - 0.5) * 2.0;
-    vec2 ratio = centered * vec2(float(screen_size.x) / float(screen_size.y), 1.0);
-    centered = ratio;
 
-    float radius = length(centered);
-    float angle = atan(centered.y, centered.x);
-    
-    // Scanning phase: continuously integrated on CPU so it never jumps backwards when speed changes
-    float effectiveSpeed = (scan_speed > 0.0001) ? scan_speed : 0.4;
-    float s = (scan_phase >= 0.0) ? scan_phase : fract(time * effectiveSpeed);
-    
-    // Normalize angle to [0, 1] range
-    angle = (angle + 3.14159) / (2.0 * 3.14159);
-    angle = 1. - angle;
-    angle = angle + .75;
-    angle = fract(angle); // loop at midnight
+    if (pass_mode == 0) {
+        // --- PASS 0: NCA SIMULATION STEP (Dispatched over sim_size) ---
+        if (gl_GlobalInvocationID.x >= SW || gl_GlobalInvocationID.y >= SH) {
+            return;
+        }
 
-    vec2 polar = vec2(radius, angle) ;
-
-    // Sample camera input
-    vec4 cameraColor = imageLoad(camTexture, texelCoord);
-
-    // Get audio data - map angle/radius to musical scale bins for circular spectrogram
-    float MUSICAL_BINS = 88.0 * 4.; // Fixed number of musical scale bins
-
-    // Frequency range control: map radial distance across selected normalized frequency window [fmin, fmax]
-    float fmin = clamp(freq_range.x, 0.0, 1.0);
-    float fmax = clamp(freq_range.y, 0.0, 1.0);
-    if (fmax <= fmin) fmax = 1.0;
-    float radNorm = clamp((1.0 - radius / 0.8), 0.0, 1.0);
-    float freqNorm = mix(fmin, fmax, radNorm);
-    int audioIndex = int(freqNorm * (MUSICAL_BINS - 1.0));
-    audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS)-1);
-    
-    int SPECTRUM_SHIFT = 0;
-    //audioIndex = int((1. - radius) * SH) * 8.;
-    float audioMagnitude = imageLoad(audioTexture, ivec2(audioIndex + SPECTRUM_SHIFT, 0)).r;
-    audioMagnitude = clamp(audioMagnitude * 200.0, 0.0, 1.0); // Amplify and clamp
-    
-    vec3 color = vec3(audioMagnitude);
-    // Shortest angular distance to beam on circle [0, 1] (eliminates glitch at 0/1 seam)
-    float angleDiff = abs(angle - fract(s));
-    angleDiff = min(angleDiff, 1.0 - angleDiff);
-    // When spectrogram_influence is 0, the scanning line is completely hidden
-    float intensity = (spectrogram_influence > 0.0001 && angleDiff < 0.012) ? 1.0 : 0.0;
-    vec3 spectrum = color * intensity * (2.0 * spectrogram_influence);
-
-    // Active audio signal is the circular radar spectrogram
-    vec3 activeAudioSignal = spectrum;
-    vec3 finalColor;
-    
-    vec4 back = imageLoad(backbuffer, texelCoord); 
-    // Only refresh backbuffer energy where audio signal is non-zero
-    if (spectrogram_influence > 0.0001 && length(activeAudioSignal) > 0.001) {
-        float sigAlpha = clamp(length(activeAudioSignal) * 1.5, 0.0, 1.0);
-        back = max(back, vec4(activeAudioSignal, sigAlpha));
-    }
-
-    // Radar decay persistence control (defaults to 0.995)
-    float effectiveDecay = (decay_time > 0.0001) ? clamp(decay_time, 0.5, 0.9999) : 0.995;
-    back *= effectiveDecay;
-    imageStore(backbuffer, texelCoord, back);
-
-    finalColor += back.rgb;
-    
-    vec4 value = vec4(finalColor, 1.0);
-    value *= 1. - radius;
-
-    vec4 tex = camlap(fragCoord);
-    if (gl_GlobalInvocationID.x >= uint(screen_size.x) || gl_GlobalInvocationID.y >= uint(screen_size.y)) { 
-        return; 
-    }
-
-    
-    //float dial = step(circle(ratio, .75), .0);
-    float dial =  .05 - circle(ratio, .85);
-    dial = dial > 0. ? dial : 0.;
-    int nc = 16;
-    float shift = .2;
-    float sr = .12;
-    float ccc;
-    for (int i=1; i<=nc; i++) {
-        //float cc = step(circle(ratio + .9 * vec2(sin(shift + i/float(nc) * 2.*acos(-1.)), cos(shift + i/float(nc) * 2*acos(-1.))), sr), .0);
-
-        float cc = - circle(ratio + .9 * vec2(sin(shift + i/float(nc) * 2.*acos(-1.)), cos(shift + i/float(nc) * 2*acos(-1.))), sr);
-        //cc += cc * spectrum.x * 100.;
-        //dial += cc;
-        ccc += cc > 0. ? cc * 4. : 0. ;
-        //dial = step(dial, .1);
-    }
-    //dial = smin(dial, ccc, 0.2);
-    dial = dial;// + ccc;
-    //dial = max(dial,ccc);
-    //dial *= 10.;
-    dial = smoothstep(dial, -.05, .01);
-    //dial = smoothstep(dial, -0.9, -.92);
-
-    if (gl_GlobalInvocationID.x < SW  && gl_GlobalInvocationID.y < SH ) { 
-        current_index = ivec2(int(gl_GlobalInvocationID.x), int(gl_GlobalInvocationID.y));
+        current_index = ivec2(gl_GlobalInvocationID.xy);
 
         float[12] ps = float[12](
             lap(0u),
@@ -487,20 +334,24 @@ void main() {
             soby(10u),
             soby(11u)
         );
-        
+
         // Update state
-        float[12] xs = get_xy(uint(current_index.x), uint(current_index.y));    
+        float[12] xs = get_xy(uint(current_index.x), uint(current_index.y));
         float[12] state = update(xs, ps);
-        vec4 scaled_back = imageLoad(backbuffer, current_index * int(FACTOR));
 
         if (frame == 0) {
-        return;
+            return;
         }
-       
-        // disturb states (scaled by spectrogram_influence; giant imprinted glyphs always disturb)
+
+        // Sample backbuffer at coordinate corresponding to current simulation cell
+        ivec2 backCoord = ivec2((vec2(current_index) + 0.5) / vec2(float(SW), float(SH)) * vec2(screen_size));
+        backCoord = clamp(backCoord, ivec2(0), screen_size - 1);
+        vec4 scaled_back = imageLoad(backbuffer, backCoord);
+
+        // Disturb states (scaled by spectrogram_influence; giant imprinted glyphs always disturb)
         float audioDisturb = spectrogram_influence;
         for (uint s = 1u; s < N; s++) {
-            float dist = (length(scaled_back) > 3.) ? (1. - length(scaled_back)) * .6 : (length(scaled_back) / 5.9 * audioDisturb);
+            float dist = (length(scaled_back) > 3.0) ? (1.0 - length(scaled_back)) * 0.6 : (length(scaled_back) / 5.9 * audioDisturb);
             state[s] += dist;
         }
 
@@ -515,7 +366,6 @@ void main() {
         }
 
         // Direct state dimming / damping directly in simulation buffer
-        // nca_state_dim is in [0.0, 1.0]. A value < 1.0 physically cools the recurrence dynamics
         float dimStrength = 1.0 - clamp(nca_state_dim, 0.0, 1.0);
         if (dimStrength > 0.001) {
             float cooling = 1.0 - dimStrength * 0.035; // gentle dissipation (up to ~3.5% per frame)
@@ -525,54 +375,105 @@ void main() {
         }
 
         set_xy(uint(current_index.x), uint(current_index.y), state);
+        return;
     }
 
-    // Rescale buffer 
-    uint idxs = uint(float(gl_GlobalInvocationID.x) / float(screen_size.x) * float(SW));
-    uint idys = uint(float(gl_GlobalInvocationID.y) / float(screen_size.y) * float(SH));
-    //idxs = gl_GlobalInvocationID.x;
-    //idys = gl_GlobalInvocationID.y;
+    // --- PASS 1: SCREEN PRESENTATION & SMOOTH RESAMPLING (Dispatched over screen_size) ---
+    ivec2 fragCoord = ivec2(gl_GlobalInvocationID.xy);
+    if (fragCoord.x >= screen_size.x || fragCoord.y >= screen_size.y) {
+        return;
+    }
 
-    // Output to screen
-    float[12] states_out = get_xy(idxs, idys);
-    vec4 xrgb;
-    if (nca_channel_view >= 0 && nca_channel_view < 12) {
-        // Direct channel view w/o color correction (raw activation magnitude in grayscale)
-        float chVal = clamp(abs(states_out[nca_channel_view]), 0.0, 1.5);
-        xrgb = vec4(chVal, chVal, chVal, 1.0);
-    } else if (nca_channel_view == 12) {
-        // Direct raw RGB channels (0, 1, 2) w/o color correction
-        xrgb = vec4(clamp(abs(states_out[0]), 0.0, 1.5),
-                    clamp(abs(states_out[1]), 0.0, 1.5),
-                    clamp(abs(states_out[2]), 0.0, 1.5), 1.0);
-    } else if (nca_channel_view == 13) {
-        // 3 main PCA components projected to RGB (w/o color correction)
-        float r_proj = 0.0;
-        float g_proj = 0.0;
-        float b_proj = 0.0;
-        for (int c = 0; c < 12; c++) {
-            float centered = states_out[c] - pca_mean[c];
-            r_proj += centered * pca_pc1[c];
-            g_proj += centered * pca_pc2[c];
-            b_proj += centered * pca_pc3[c];
-        }
-        float r_val = clamp(r_proj / (2.5 * max(0.05, pca_std.x)) + 0.5, 0.0, 1.0);
-        float g_val = clamp(g_proj / (2.5 * max(0.05, pca_std.y)) + 0.5, 0.0, 1.0);
-        float b_val = clamp(b_proj / (2.5 * max(0.05, pca_std.z)) + 0.5, 0.0, 1.0);
-        xrgb = vec4(r_val, g_val, b_val, 1.0);
+    vec2 uv = (vec2(fragCoord) + 0.5) / vec2(screen_size);
+
+    // Resample CA cells using zero-artifact continuous coordinate mapping
+    vec2 simCoord = uv * vec2(float(SW), float(SH)) - 0.5;
+    vec4 cellColor;
+
+    if (sim_filtering == 2) {
+        // Nearest-Neighbor (Clean pixel-art grid w/ toroidal modulo)
+        int nx = int(floor(simCoord.x + 0.5));
+        int ny = int(floor(simCoord.y + 0.5));
+        uint x0 = uint(((nx % int(SW)) + int(SW)) % int(SW));
+        uint y0 = uint(((ny % int(SH)) + int(SH)) % int(SH));
+        cellColor = get_cell_color(x0, y0);
     } else {
-        // Default composite with color correction
-        xrgb = vec4(states_out[3], states_out[0], states_out[3], states_out[3]);
-        xrgb.g *= .5555;
-        xrgb *= .9;
+        float fx = fract(simCoord.x);
+        float fy = fract(simCoord.y);
+        int ix = int(floor(simCoord.x));
+        int iy = int(floor(simCoord.y));
+
+        uint x0 = uint(((ix % int(SW)) + int(SW)) % int(SW));
+        uint x1 = uint((((ix + 1) % int(SW)) + int(SW)) % int(SW));
+        uint y0 = uint(((iy % int(SH)) + int(SH)) % int(SH));
+        uint y1 = uint((((iy + 1) % int(SH)) + int(SH)) % int(SH));
+
+        vec4 c00 = get_cell_color(x0, y0);
+        vec4 c10 = get_cell_color(x1, y0);
+        vec4 c01 = get_cell_color(x0, y1);
+        vec4 c11 = get_cell_color(x1, y1);
+
+        float wx, wy;
+        if (sim_filtering == 1) {
+            // Bilinear
+            wx = fx;
+            wy = fy;
+        } else {
+            // Smooth Hermite S-Curve (Default - Zero-artifact, C1 continuous derivative)
+            wx = fx * fx * (3.0 - 2.0 * fx);
+            wy = fy * fy * (3.0 - 2.0 * fy);
+        }
+
+        vec4 top = mix(c00, c10, wx);
+        vec4 bot = mix(c01, c11, wx);
+        cellColor = mix(top, bot, wy);
     }
-    //xrgb = pow(xrgb, vec4(3.));
-    imageStore(outputTexture, fragCoord, xrgb);
-    // interpolation
-    vec4 interpolated = interp(fragCoord, int(FACTOR-1));
-    // Overlay direct luminous radar sweep and glowing backbuffer structures (imprinted messages)
+
+    // Audio radar sweep overlay & backbuffer decay
+    vec2 centered = (uv - 0.5) * 2.0;
+    vec2 ratio = centered * vec2(float(screen_size.x) / float(screen_size.y), 1.0);
+    float radius = length(ratio);
+    float angle = atan(ratio.y, ratio.x);
+
+    float effectiveSpeed = (scan_speed > 0.0001) ? scan_speed : 0.4;
+    float s = (scan_phase >= 0.0) ? scan_phase : fract(time * effectiveSpeed);
+
+    angle = (angle + 3.14159265) / (2.0 * 3.14159265);
+    angle = 1.0 - angle;
+    angle = angle + 0.75;
+    angle = fract(angle);
+
+    float MUSICAL_BINS = 88.0 * 4.0;
+    float fmin = clamp(freq_range.x, 0.0, 1.0);
+    float fmax = clamp(freq_range.y, 0.0, 1.0);
+    if (fmax <= fmin) fmax = 1.0;
+    float radNorm = clamp((1.0 - radius / 0.8), 0.0, 1.0);
+    float freqNorm = mix(fmin, fmax, radNorm);
+    int audioIndex = int(freqNorm * (MUSICAL_BINS - 1.0));
+    audioIndex = clamp(audioIndex, 0, int(MUSICAL_BINS) - 1);
+
+    float audioMagnitude = imageLoad(audioTexture, ivec2(audioIndex, 0)).r;
+    audioMagnitude = clamp(audioMagnitude * 200.0, 0.0, 1.0);
+
+    vec3 color = vec3(audioMagnitude);
+    float angleDiff = abs(angle - fract(s));
+    angleDiff = min(angleDiff, 1.0 - angleDiff);
+    float intensity = (spectrogram_influence > 0.0001 && angleDiff < 0.012) ? 1.0 : 0.0;
+    vec3 spectrum = color * intensity * (2.0 * spectrogram_influence);
+    vec3 activeAudioSignal = spectrum;
+
+    vec4 back = imageLoad(backbuffer, fragCoord);
+    if (spectrogram_influence > 0.0001 && length(activeAudioSignal) > 0.001) {
+        float sigAlpha = clamp(length(activeAudioSignal) * 1.5, 0.0, 1.0);
+        back = max(back, vec4(activeAudioSignal, sigAlpha));
+    }
+    float effectiveDecay = (decay_time > 0.0001) ? clamp(decay_time, 0.5, 0.9999) : 0.995;
+    back *= effectiveDecay;
+    imageStore(backbuffer, fragCoord, back);
+
     vec3 overlayBack = (spectrogram_influence > 0.0001) ? (back.rgb * 0.35) : (length(back.rgb) > 1.5 ? (back.rgb * 0.35) : vec3(0.0));
-    interpolated.rgb += activeAudioSignal * 0.85 + overlayBack;
-    imageStore(outputTexture, fragCoord, interpolated);
+    cellColor.rgb += activeAudioSignal * 0.85 + overlayBack;
+
+    imageStore(outputTexture, fragCoord, cellColor);
 }
  
