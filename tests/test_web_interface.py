@@ -278,11 +278,11 @@ def main():
     print("[12] Testing PCA Palette Re-roll and Hue Shift Controls (/api/pca/palette)...")
     res = post_json("/api/pca/palette", {"reroll": True})
     assert "pca_hue_shift" in res
-    res = post_json("/api/pca/palette", {"shift": 0.7854})
+    res = post_json("/api/pca/palette", {"shift": 45.0})
     assert "pca_hue_shift" in res
-    res = post_json("/api/pca/palette", {"hue": 2.094})
-    assert abs(res["pca_hue_shift"] - 2.094) < 0.02
-    print(f"  -> PCA Palette controls verified (reroll, shift, absolute hue: {res['pca_hue_shift']} rad).")
+    res = post_json("/api/pca/palette", {"hue": 120.0})
+    assert abs(res["pca_hue_shift"] - 120.0) < 1.0
+    print(f"  -> PCA Palette controls verified (reroll, shift, absolute hue: {res['pca_hue_shift']}°).")
 
     # Reset to defaults
     post_json("/api/controls", {

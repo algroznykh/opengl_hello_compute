@@ -606,10 +606,16 @@ private:
                 }
                 float shift;
                 if (extractJsonFloat(body, "shift", shift) || extractJsonFloat(body, "delta", shift) || extractJsonFloat(body, "hue_delta", shift)) {
+                    if (std::abs(shift) <= 6.2832f && std::abs(shift) > 0.0001f) {
+                        shift = shift * 180.0f / (float)M_PI;
+                    }
                     m_config.pcaPendingHueDelta.store(shift);
                 }
                 float hue;
                 if (extractJsonFloat(body, "hue", hue) || extractJsonFloat(body, "hue_shift", hue) || extractJsonFloat(body, "pca_hue_shift", hue)) {
+                    if (hue <= 6.2832f && hue > 0.0001f) {
+                        hue = hue * 180.0f / (float)M_PI;
+                    }
                     m_config.pcaPendingHueShift.store(hue);
                     m_config.pcaHueShift.store(hue);
                 }
@@ -1346,8 +1352,8 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         </div>
         <div class="btn-row" style="margin:0;">
           <button class="btn" onclick="rerollPcaPalette()" style="flex:1.2; border-color:#bb66ff; color:#dd88ff; font-weight:700;" title="Re-roll PCA color axes randomly in SO(3)">🎲 Re-roll Palette</button>
-          <button class="btn" onclick="shiftPcaPalette(0.7854)" style="flex:1;" title="Shift palette hue by +45° around achromatic axis">🔄 Shift +45°</button>
-          <button class="btn" onclick="shiftPcaPalette(1.5708)" style="flex:1;" title="Shift palette hue by +90° around achromatic axis">🔄 Shift +90°</button>
+          <button class="btn" onclick="shiftPcaPalette(45)" style="flex:1;" title="Shift palette hue by +45° around achromatic axis">🔄 Shift +45°</button>
+          <button class="btn" onclick="shiftPcaPalette(90)" style="flex:1;" title="Shift palette hue by +90° around achromatic axis">🔄 Shift +90°</button>
         </div>
         <div style="display:flex; flex-direction:column; gap:2px; margin-top:2px;">
           <div class="meta-row" style="margin:0;">
@@ -1803,15 +1809,15 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 
       // Sync PCA Hue
       if (s.pca_hue_shift !== undefined) {
-        state.pca_hue_shift = parseFloat(s.pca_hue_shift);
-        let deg = Math.round((state.pca_hue_shift * 180.0 / Math.PI)) % 360;
+        let deg = Math.round(parseFloat(s.pca_hue_shift)) % 360;
         if (deg < 0) deg += 360;
+        state.pca_hue_shift = deg;
         const slider = document.getElementById('pcaHueSlider');
         if (slider && !slider.matches(':active')) slider.value = deg;
         const lbl = document.getElementById('pcaHueAngleLabel');
         if (lbl) lbl.innerText = deg + '°';
         const valTxt = document.getElementById('pcaHueVal');
-        if (valTxt) valTxt.innerText = deg + '° (' + state.pca_hue_shift.toFixed(2) + ' rad)';
+        if (valTxt) valTxt.innerText = deg === 0 ? '0° (Original)' : deg + '°';
       }
     }
 
@@ -2088,12 +2094,12 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       } catch (e) {}
     }
 
-    async function shiftPcaPalette(deltaRad) {
+    async function shiftPcaPalette(deltaDeg) {
       try {
         const res = await fetch('/api/pca/palette', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shift: deltaRad })
+          body: JSON.stringify({ shift: deltaDeg })
         });
         if (res.ok) {
           const data = await res.json();
@@ -2104,17 +2110,17 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     }
 
     async function onPcaHueSlider(valDeg) {
-      const rad = (parseFloat(valDeg) * Math.PI) / 180.0;
-      state.pca_hue_shift = rad;
+      const deg = parseFloat(valDeg);
+      state.pca_hue_shift = deg;
       const degLabel = document.getElementById('pcaHueAngleLabel');
-      if (degLabel) degLabel.innerText = Math.round(valDeg) + '°';
+      if (degLabel) degLabel.innerText = Math.round(deg) + '°';
       const valText = document.getElementById('pcaHueVal');
-      if (valText) valText.innerText = Math.round(valDeg) + '° (' + rad.toFixed(2) + ' rad)';
+      if (valText) valText.innerText = Math.round(deg) + '°';
       try {
         const res = await fetch('/api/pca/palette', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ hue: rad })
+          body: JSON.stringify({ hue: deg })
         });
         if (res.ok) {
           const data = await res.json();
