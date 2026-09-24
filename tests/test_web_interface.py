@@ -90,11 +90,18 @@ def main():
     assert "reversePoleBtn" in html, "HTML should contain reversePoleBtn"
     assert "reverseSpinBtn" in html, "HTML should contain reverseSpinBtn"
     assert "specInfluenceSlider" in html, "HTML should contain specInfluenceSlider"
+    assert "specScaleVal" in html, "HTML should contain specScaleVal"
+    assert "specScaleSlider" in html, "HTML should contain specScaleSlider"
+    assert "specScaleBtn05" in html, "HTML should contain specScaleBtn05"
+    assert "specScaleBtn1" in html, "HTML should contain specScaleBtn1"
+    assert "specScaleBtn2" in html, "HTML should contain specScaleBtn2"
+    assert "specScaleBtn4" in html, "HTML should contain specScaleBtn4"
+    assert "setSpectrogramScale" in html, "HTML should contain setSpectrogramScale"
     assert "setNcaChannel" in html, "HTML should contain setNcaChannel"
     assert "chBtnPca" in html, "HTML should contain chBtnPca button"
     assert "triggerImprint" in html, "HTML should contain Easter egg triggerImprint"
     assert "imprintInput" in html, "HTML should contain arbitrary message input"
-    print("  -> Passed. Topology, Easter Egg Imprint, Spectrogram, and Direct Channels verified in HTML.")
+    print("  -> Passed. Topology, Easter Egg Imprint, Spectrogram Scale, and Direct Channels verified in HTML.")
 
     print("[2] Testing GET /api/status...")
     status_str, _ = get("/api/status")
@@ -106,6 +113,7 @@ def main():
     assert "rhythm_division" in status
     assert "auto_freq" in status
     assert "spectrogram_influence" in status
+    assert "spectrogram_scale" in status
     assert "nca_channel_view" in status
     assert "nca_topology" in status
     assert "topology" in status
@@ -115,6 +123,7 @@ def main():
     # Verify requested default values
     assert status["auto_speed"] is True, "Default auto_speed must be True"
     assert abs(status["spectrogram_influence"] - 1.0) < 0.05, "Default spectrogram_influence must be 1.0"
+    assert abs(status["spectrogram_scale"] - 1.0) < 0.05, "Default spectrogram_scale must be 1.0"
     assert abs(status["nca_topology"] - 1.0) < 0.05, "Default nca_topology must be Polar (1.0)"
     assert status["reverse_pole"] is True, "Default reverse_pole must be True (inward)"
     assert abs(status["decay_time"] - 0.9700) < 0.005, f"Default decay_time must be Medium (0.9700), got {status.get('decay_time')}"
@@ -244,12 +253,31 @@ def main():
     assert res["sim_width"] == 800 and res["sim_height"] == 600
     print("  -> Resolution control via /api/controls verified.")
 
-    print("[9] Testing Spectrogram Influence Controls (/api/spectrogram)...")
+    print("[9] Testing Spectrogram Influence and Scale Controls (/api/spectrogram & /api/controls)...")
     res = post_json("/api/spectrogram", {"spectrogram_influence": 0.0})
     assert abs(res["spectrogram_influence"] - 0.0) < 0.01
     res = post_json("/api/controls", {"spectrogram_influence": 1.0})
     assert abs(res["spectrogram_influence"] - 1.0) < 0.01
-    print("  -> Spectrogram influence verified.")
+
+    # Verify scaling w/o disabling auto range
+    assert res.get("auto_freq") is True
+    res = post_json("/api/spectrogram", {"scale": 2.0})
+    assert abs(res["spectrogram_scale"] - 2.0) < 0.05, f"Expected scale 2.0, got {res.get('spectrogram_scale')}"
+    assert res.get("auto_freq") is True, "Spectrogram scaling must not disable auto range"
+
+    res = post_json("/api/controls", {"spectrogram_scale": 4.0})
+    assert abs(res["spectrogram_scale"] - 4.0) < 0.05, f"Expected scale 4.0, got {res.get('spectrogram_scale')}"
+    assert res.get("auto_freq") is True, "Spectrogram scaling must not disable auto range"
+
+    res = post_json("/api/spectrogram", {"spectrogram_scale": 0.5})
+    assert abs(res["spectrogram_scale"] - 0.5) < 0.05, f"Expected scale 0.5, got {res.get('spectrogram_scale')}"
+    assert res.get("auto_freq") is True, "Spectrogram scaling must not disable auto range"
+
+    # Reset back to 1.0
+    res = post_json("/api/controls", {"spectrogram_scale": 1.0})
+    assert abs(res["spectrogram_scale"] - 1.0) < 0.05
+    assert res.get("auto_freq") is True
+    print("  -> Spectrogram influence and 2x/4x/0.5x scaling (preserving auto range) verified.")
 
     print("[10] Testing Simulation State Reset (/api/reset_state)...")
     res = post_json("/api/reset_state", {})

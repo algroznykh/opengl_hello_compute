@@ -57,6 +57,7 @@ struct RadarConfig {
 
     // Spectrogram influence & scanning line visibility (0.0 = completely muted / beam hidden)
     std::atomic<float> spectrogramInfluence{1.0f}; // Default: 1.0
+    std::atomic<float> spectrogramScale{1.0f};     // Default: 1.0 (Radial scale multiplier)
     std::atomic<bool> resetStateRequested{false};
 
     // NCA Channel View (-1 = default composite, 12 = selectable 3 channels RGB, 13 = PCA RGB)
@@ -175,6 +176,7 @@ struct RadarConfig {
         ss << "  \"reverse_pole\": " << (ncaReversePole.load() ? "true" : "false") << ",\n";
         ss << "  \"reverse_spin\": " << (ncaReverseSpin.load() ? "true" : "false") << ",\n";
         ss << "  \"spectrogram_influence\": " << spectrogramInfluence.load() << ",\n";
+        ss << "  \"spectrogram_scale\": " << spectrogramScale.load() << ",\n";
         ss << "  \"nca_channel_view\": " << ncaChannelView.load() << ",\n";
         ss << "  \"custom_channel_r\": " << customChannelR.load() << ",\n";
         ss << "  \"custom_channel_g\": " << customChannelG.load() << ",\n";
@@ -580,6 +582,9 @@ private:
                 if (extractJsonFloat(body, "influence", val) || extractJsonFloat(body, "spectrogram_influence", val) || extractJsonFloat(body, "gain", val)) {
                     m_config.spectrogramInfluence.store(std::max(0.0f, std::min(5.0f, val)));
                 }
+                if (extractJsonFloat(body, "scale", val) || extractJsonFloat(body, "spectrogram_scale", val) || extractJsonFloat(body, "multiplier", val)) {
+                    m_config.spectrogramScale.store(std::max(0.1f, std::min(10.0f, val)));
+                }
             }
             std::string resBody = m_config.toJson();
             std::ostringstream response;
@@ -923,6 +928,9 @@ private:
 
             if (extractJsonFloat(body, "spectrogram_influence", val) || extractJsonFloat(body, "spectrogram_gain", val) || extractJsonFloat(body, "spectrogram_strength", val)) {
                 m_config.spectrogramInfluence.store(std::max(0.0f, std::min(5.0f, val)));
+            }
+            if (extractJsonFloat(body, "spectrogram_scale", val) || extractJsonFloat(body, "spec_scale", val)) {
+                m_config.spectrogramScale.store(std::max(0.1f, std::min(10.0f, val)));
             }
             if ((extractJsonBool(body, "reset_state", boolVal) && boolVal) || (extractJsonString(body, "action", strVal) && strVal == "reset_state")) {
                 m_config.resetStateRequested.store(true);
@@ -1423,22 +1431,37 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     <!-- Frequency Range & Scaling Autotune -->
     <div class="section">
       <div class="section-head">
-        <span class="section-title">Frequency Range</span>
-        <span id="freqRangeVal" class="val">100 - 10000 Hz</span>
+        <span class="section-title">Frequency Range & Spectrogram Scale</span>
+        <span id="freqRangeVal" class="val">60 - 4000 Hz</span>
       </div>
 
+      <!-- Spectrogram Scale Multipliers: 2x/4x bigger w/o disabling auto range (like rhythm section) -->
       <div style="display:flex; flex-direction:column; gap:3px;">
-        <div class="meta-row"><span>Min Freq</span><span id="minFreqVal">100 Hz</span></div>
-        <input type="range" id="freqMinSlider" min="20" max="2000" step="10" value="100">
+        <div class="meta-row">
+          <span>Spectrogram Scale (Size):</span>
+          <span id="specScaleVal" class="val" style="color:var(--accent); font-weight:700;">1.00x</span>
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="specScaleBtn05" onclick="setSpectrogramScale(0.5)" title="½x Smaller Spectrogram">½x Smaller</button>
+          <button class="btn active" id="specScaleBtn1" onclick="setSpectrogramScale(1.0)" title="1x Normal Spectrogram Size">1x Normal</button>
+          <button class="btn" id="specScaleBtn2" onclick="setSpectrogramScale(2.0)" title="2x Bigger Spectrogram (Magnified)">2x Bigger</button>
+          <button class="btn" id="specScaleBtn4" onclick="setSpectrogramScale(4.0)" title="4x Bigger Spectrogram (Super Magnified)">4x Bigger</button>
+        </div>
+        <input type="range" id="specScaleSlider" min="0.25" max="5.00" step="0.05" value="1.00">
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:3px; margin-top:4px;">
+        <div class="meta-row"><span>Min Freq</span><span id="minFreqVal">60 Hz</span></div>
+        <input type="range" id="freqMinSlider" min="20" max="2000" step="10" value="60">
       </div>
 
       <div style="display:flex; flex-direction:column; gap:3px; margin-top:2px;">
-        <div class="meta-row"><span>Max Freq</span><span id="maxFreqVal">10000 Hz</span></div>
-        <input type="range" id="freqMaxSlider" min="200" max="20000" step="100" value="10000">
+        <div class="meta-row"><span>Max Freq</span><span id="maxFreqVal">4000 Hz</span></div>
+        <input type="range" id="freqMaxSlider" min="200" max="20000" step="100" value="4000">
       </div>
 
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:2px;">
-        <button id="autoFreqBtn" class="toggle-btn" onclick="toggleAutoFreq()">
+        <button id="autoFreqBtn" class="toggle-btn active" onclick="toggleAutoFreq()">
           ⚡ Auto Freq & Scaling
         </button>
         <span id="gainLabel" class="meta-row" style="margin:0;">Gain: 1.0x</span>
@@ -1568,12 +1591,14 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       custom_channel_r: 0,
       custom_channel_g: 1,
       custom_channel_b: 2,
-      pca_hue_shift: 0.0
+      pca_hue_shift: 0.0,
+      spectrogram_scale: 1.0
     };
 
     const connDot = document.getElementById('connDot');
     const speedSlider = document.getElementById('speedSlider');
     const specInfluenceSlider = document.getElementById('specInfluenceSlider');
+    const specScaleSlider = document.getElementById('specScaleSlider');
     const decaySlider = document.getElementById('decaySlider');
     const freqMinSlider = document.getElementById('freqMinSlider');
     const freqMaxSlider = document.getElementById('freqMaxSlider');
@@ -1584,6 +1609,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
 
     const speedVal = document.getElementById('speedVal');
     const specInfluenceVal = document.getElementById('specInfluenceVal');
+    const specScaleVal = document.getElementById('specScaleVal');
     const decayVal = document.getElementById('decayVal');
     const freqRangeVal = document.getElementById('freqRangeVal');
     const minFreqVal = document.getElementById('minFreqVal');
@@ -1647,6 +1673,20 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
         document.getElementById('specBtn50')?.classList.toggle('active', Math.abs(inf - 0.5) < 0.05);
         document.getElementById('specBtn100')?.classList.toggle('active', Math.abs(inf - 1.0) < 0.05);
         document.getElementById('specBtn150')?.classList.toggle('active', Math.abs(inf - 1.5) < 0.05);
+      }
+
+      // Spectrogram scale (size: 0.5x, 1x, 2x, 4x) w/o disabling auto range
+      if (s.spectrogram_scale !== undefined) {
+        state.spectrogram_scale = parseFloat(s.spectrogram_scale);
+        const sc = state.spectrogram_scale;
+        if (specScaleVal) specScaleVal.innerText = sc.toFixed(2) + 'x';
+        if (specScaleSlider && !specScaleSlider.matches(':active')) {
+          specScaleSlider.value = sc;
+        }
+        document.getElementById('specScaleBtn05')?.classList.toggle('active', Math.abs(sc - 0.5) < 0.05);
+        document.getElementById('specScaleBtn1')?.classList.toggle('active', Math.abs(sc - 1.0) < 0.05);
+        document.getElementById('specScaleBtn2')?.classList.toggle('active', Math.abs(sc - 2.0) < 0.05);
+        document.getElementById('specScaleBtn4')?.classList.toggle('active', Math.abs(sc - 4.0) < 0.05);
       }
 
       if (s.nca_step_scale !== undefined) {
@@ -1825,6 +1865,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       speedSlider.value = state.scanning_speed;
       decaySlider.value = state.decay_time;
       if (specInfluenceSlider) specInfluenceSlider.value = state.spectrogram_influence !== undefined ? state.spectrogram_influence : 1.0;
+      if (specScaleSlider) specScaleSlider.value = state.spectrogram_scale !== undefined ? state.spectrogram_scale : 1.0;
       freqMinSlider.value = state.freq_min;
       freqMaxSlider.value = state.freq_max;
       topologySlider.value = state.nca_topology;
@@ -1844,6 +1885,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           scanning_speed: parseFloat(state.scanning_speed),
           decay_time: parseFloat(state.decay_time),
           spectrogram_influence: parseFloat(state.spectrogram_influence !== undefined ? state.spectrogram_influence : 1.0),
+          spectrogram_scale: parseFloat(state.spectrogram_scale !== undefined ? state.spectrogram_scale : 1.0),
           freq_min: parseFloat(state.freq_min),
           freq_max: parseFloat(state.freq_max),
           scale: state.scale,
@@ -1884,6 +1926,7 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
           pendingUpdate = false;
           sendControls();
         }
+      }
     }
 
     async function multiplySpeed(factor) {
@@ -1917,6 +1960,14 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
       updateUI(state);
       sendControls();
     });
+
+    if (specScaleSlider) {
+      specScaleSlider.addEventListener('input', () => {
+        state.spectrogram_scale = parseFloat(specScaleSlider.value);
+        updateUI(state);
+        sendControls();
+      });
+    }
 
     decaySlider.addEventListener('input', () => {
       state.decay_time = parseFloat(decaySlider.value);
@@ -2189,6 +2240,13 @@ inline std::string RadarWebServer::getEmbeddedHtml() {
     function setSpectrogramInfluence(v) {
       state.spectrogram_influence = v;
       if (specInfluenceSlider) specInfluenceSlider.value = v;
+      updateUI(state);
+      sendControls();
+    }
+
+    function setSpectrogramScale(v) {
+      state.spectrogram_scale = parseFloat(v);
+      if (specScaleSlider) specScaleSlider.value = v;
       updateUI(state);
       sendControls();
     }

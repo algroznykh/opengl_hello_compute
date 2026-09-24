@@ -23,6 +23,7 @@ uniform float nca_topology; // 0.0 = Cartesian, 1.0 = Polar (pole in center)
 uniform float nca_pole_radial;    // +1.0 = outward pole, -1.0 = reversed/inward pole
 uniform float nca_pole_azimuthal; // +1.0 = standard CCW spin, -1.0 = reversed CW spin
 uniform float spectrogram_influence; // Controls how much spectrogram affects NCA state & beam visibility (0.0 to 2.0)
+uniform float spectrogram_scale;     // Radial spectrogram scale multiplier (0.25 to 5.0, default 1.0)
 uniform int nca_channel_view;         // -1 = composite, 0..11 = direct channel w/o CC, 12 = 3 selectable channels (RGB), 13 = 3 main PCA components for RGB
 uniform ivec3 custom_channels;         // Selectable 3 channels (r, g, b) in [0..11]
 uniform mat3 pca_palette_matrix;       // 3x3 PCA orientation and hue rotation matrix
@@ -457,10 +458,10 @@ void main() {
     float fmax = clamp(freq_range.y, 0.0, 1.0);
     if (fmax <= fmin) fmax = 1.0;
 
-    // Radially map from center (bass) to screen edge (treble)
-    // radius = 0 is center (bass fmin), radius ~ 1.05 is screen edge (treble fmax)
-    // Eliminates empty center (bass is in the center) and eliminates overly long bins at perimeter
-    float radNorm = clamp(radius / 1.05, 0.0, 1.0);
+    // Radially map from center (bass) to screen edge (treble) with optional scaling
+    // radius = 0 is center (bass fmin), radius ~ 1.05 * specScale is outer boundary
+    float specScale = (spectrogram_scale > 0.001) ? spectrogram_scale : 1.0;
+    float radNorm = clamp((radius / specScale) / 1.05, 0.0, 1.0);
     float freqNorm = mix(fmin, fmax, radNorm);
 
     // Continuous linear interpolation between FFT bins

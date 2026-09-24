@@ -1691,6 +1691,7 @@ int main(int argc, char* argv[]) {
             currentComputeShader->setFloat("freq_max_hz", g_radarConfig.freqMaxHz.load());
             currentComputeShader->setInt("scale_type", g_radarConfig.scaleType.load());
             currentComputeShader->setFloat("spectrogram_influence", g_radarConfig.spectrogramInfluence.load());
+            currentComputeShader->setFloat("spectrogram_scale", g_radarConfig.spectrogramScale.load());
             currentComputeShader->setInt("nca_channel_view", g_radarConfig.ncaChannelView.load());
             currentComputeShader->setIVec3("custom_channels", 
                 g_radarConfig.customChannelR.load(),
